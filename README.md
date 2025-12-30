@@ -8,7 +8,7 @@
 
 **Other SEC MCPs:** Dump entire filing into tool response (241K tokens per 10-K)
 
-**This MCP:** Save to `/tmp/sec-filings/`, return path (50 tokens)
+**This MCP:** Save to `/var/idio-mcp-cache/sec-filings/`, return path (50 tokens)
 
 You get:
 - **Zero context pollution** - Filing doesn't count against your limit
@@ -29,45 +29,30 @@ poetry install
 ### Quick Start
 
 ```bash
-# Development (auto-reload on file changes)
+# Development (auto-reload on file changes, port 5012)
 make dev        # Server restarts when you edit code
 
-# Production (background daemon)
+# Production (background daemon, port 5002)
 make server     # Start server on http://127.0.0.1:5002
 make logs       # Tail server logs
+
+# stdio mode (for Claude Code)
+make stdio      # Start stdio server
 
 # Configure via .env (optional)
 cp .env.example .env
 # Edit .env to customize PORT and CACHE_DIR
 ```
 
+**Default ports:**
+- Development: 5012 (auto-reload with `make dev`)
+- Production: 5002 (background daemon with `make server`)
+
 ### Configure Claude Code
 
-**Option 1: Standalone executable (recommended)**
+**Option 1: Using Poetry (recommended)**
 
-Use the provided `mcp-edgar-ux-mcp` executable for easy setup:
-
-```json
-{
-  "projects": {
-    "/your/project/path": {
-      "mcpServers": {
-        "mcp-edgar-ux": {
-          "command": "/path/to/mcp-edgar-ux/mcp-edgar-ux-mcp"
-        }
-      }
-    }
-  }
-}
-```
-
-Or add via Claude Code UI: Settings → MCP → Add Server → Command: `/path/to/mcp-edgar-ux/mcp-edgar-ux-mcp`
-
-Restart Claude Code and the server will start automatically.
-
-**Option 2: Using Poetry directly**
-
-If you prefer to use Poetry:
+Configure Claude Code to use stdio transport:
 
 ```json
 {
@@ -85,7 +70,7 @@ If you prefer to use Poetry:
 }
 ```
 
-**Option 3: SSE/HTTP Server (for web-based deployments)**
+**Option 2: SSE/HTTP Server (for web-based deployments)**
 
 For web interfaces or when you need a persistent HTTP server:
 
@@ -130,13 +115,13 @@ Configure Claude Code to use SSE transport:
 ```bash
 # Fetch a filing
 fetch_filing("TSLA", "10-K")
-→ {path: "/tmp/sec-filings/TSLA/10-K/2025-04-30.txt", ...}
+→ {path: "/var/idio-mcp-cache/sec-filings/TSLA/10-K/2025-04-30.txt", ...}
 
 # Read what you need
-Read("/tmp/sec-filings/TSLA/10-K/2025-04-30.txt", offset=1200, limit=50)
+Read("/var/idio-mcp-cache/sec-filings/TSLA/10-K/2025-04-30.txt", offset=1200, limit=50)
 
 # Search for terms
-Grep("supply chain", path="/tmp/sec-filings/TSLA/10-K/2025-04-30.txt")
+Grep("supply chain", path="/var/idio-mcp-cache/sec-filings/TSLA/10-K/2025-04-30.txt")
 ```
 
 ## Tools
@@ -155,14 +140,14 @@ Download SEC filing to disk, return path.
 ```json
 {
   "success": true,
-  "path": "/tmp/sec-filings/TSLA/10-K/2025-04-30.txt",
+  "path": "/var/idio-mcp-cache/sec-filings/TSLA/10-K/2025-04-30.txt",
   "company": "Tesla, Inc.",
   "ticker": "TSLA",
   "form_type": "10-K",
   "filing_date": "2025-04-30",
   "format": "text",
   "size_bytes": 427000,
-  "sec_url": "https://...",
+  "sec_url": "https://www.sec.gov/...",
   "cached": false
 }
 ```
@@ -283,19 +268,17 @@ Data source: SEC EDGAR | Powered by edgartools
 
 ### fetch_filing("TSLA", "10-K")
 
-```json
-{
-  "success": true,
-  "path": "/tmp/sec-filings/TSLA/10-K/2025-04-30.txt",
-  "company": "Tesla, Inc.",
-  "ticker": "TSLA",
-  "form_type": "10-K",
-  "filing_date": "2025-04-30",
-  "format": "text",
-  "size_bytes": 427000,
-  "sec_url": "https://www.sec.gov/...",
-  "cached": false
-}
+```
+TSLA 10-K | 2025-04-30 | FETCHED (downloaded)
+
+COMPANY:     Tesla, Inc.
+FORM:        10-K
+FILED:       2025-04-30
+SIZE:        427 KB (10,234 lines)
+
+PATH: /var/idio-mcp-cache/sec-filings/TSLA/10-K/2025-04-30.txt
+
+Try: Read(path, offset=0, limit=50) | search_filing("TSLA", "10-K", "SEARCH TERM")
 ```
 
 Clean, formatted, immediately useful. No raw JSON dumps, no 241K tokens in context.
@@ -333,14 +316,14 @@ CACHE_DIR=/custom/path make server
 ```bash
 # 1. Fetch Tesla's latest 10-K
 fetch_filing("TSLA", "10-K")
-→ /tmp/sec-filings/TSLA/10-K/2025-04-30.txt (427KB, clean text)
+→ /var/idio-mcp-cache/sec-filings/TSLA/10-K/2025-04-30.txt (427KB, clean text)
 
 # 2. Search for supply chain mentions
-Grep("supply chain", path="/tmp/sec-filings/TSLA/10-K/2025-04-30.txt")
-→ 12 matches, lines [1234, 2456, ...]
+search_filing("TSLA", "10-K", "supply chain")
+→ Shows matches with line numbers and context
 
 # 3. Read specific section
-Read("/tmp/sec-filings/TSLA/10-K/2025-04-30.txt", offset=1200, limit=50)
+Read("/var/idio-mcp-cache/sec-filings/TSLA/10-K/2025-04-30.txt", offset=1200, limit=50)
 → Only 50 lines in context (not 241K tokens)
 
 # 4. Analyze
