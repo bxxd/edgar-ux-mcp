@@ -324,11 +324,27 @@ class EdgarAdapter(FilingFetcher):
 
         # Download content in requested format
         if format == "markdown":
-            return edgar_filing.markdown(include_exhibits=include_exhibits)
+            content = edgar_filing.markdown()
         elif format == "html":
-            return edgar_filing.html()
+            content = edgar_filing.html()
         else:  # text
-            return edgar_filing.text()
+            content = edgar_filing.text()
+
+        # Append exhibits (critical for 8-Ks where Exhibit 99.1 has the actual data)
+        if include_exhibits:
+            try:
+                for exhibit in edgar_filing.exhibits:
+                    if exhibit.document_type.startswith('EX-'):
+                        ex_text = exhibit.text() if format != "html" else exhibit.content
+                        if ex_text:
+                            separator = "\n\n" + "=" * 70 + "\n"
+                            separator += f"EXHIBIT: {exhibit.document_type} ({exhibit.document})\n"
+                            separator += "=" * 70 + "\n\n"
+                            content += separator + ex_text
+            except Exception:
+                pass  # If exhibits fail, return main document
+
+        return content
 
     def get_latest(self, ticker: Optional[str], form_type: str, date: Optional[str] = None) -> Filing:
         """Get metadata for latest filing (or first filing >= date)
