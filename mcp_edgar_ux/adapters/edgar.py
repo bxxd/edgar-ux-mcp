@@ -140,51 +140,54 @@ class EdgarAdapter(FilingFetcher):
                 if is_fresh:
                     # Fresh cache hit - return immediately
                     current_filings = cached_result
-                elif cached_result is not None:
-                    # Stale cache hit - return immediately to avoid timeout
-                    # (Better to show 2-minute-old data than timeout)
-                    import logging
-                    logging.getLogger(__name__).info(
-                        f"Returning stale cache for {form_type} to avoid timeout"
-                    )
-                    current_filings = cached_result
                 else:
-                    # Cache miss - fetch from SEC.gov
+                    # Stale or cache miss - try to fetch fresh data
                     # Clear edgartools' LRU cache to ensure we get fresh data when TTL expires
                     get_current_entries_on_page.cache_clear()
 
-                    # For CORE or ALL (without ticker): query core form types in parallel
-                    # ALL without ticker would return too much noise (mutual fund forms, etc.)
-                    if form_type in ('CORE', 'ALL'):
-                        core_forms = ['10-K', '10-Q', '20-F', '6-K', '8-K', 'S-1', 'S-3', 'S-4']
+                    try:
+                        # For CORE or ALL (without ticker): query core form types in parallel
+                        # ALL without ticker would return too much noise (mutual fund forms, etc.)
+                        if form_type in ('CORE', 'ALL'):
+                            core_forms = ['10-K', '10-Q', '20-F', '6-K', '8-K', 'S-1', 'S-3', 'S-4']
 
-                        def fetch_form(form: str):
-                            try:
-                                return list(get_current_filings(form=form, page_size=50))
-                            except Exception:
-                                return []
+                            def fetch_form(form: str):
+                                try:
+                                    return list(get_current_filings(form=form, page_size=50))
+                                except Exception:
+                                    return []
 
-                        all_filings = []
-                        # Set max_workers to 4 (instead of 8) to reduce parallel load on SEC.gov
-                        with ThreadPoolExecutor(max_workers=4) as executor:
-                            futures = {executor.submit(fetch_form, form): form for form in core_forms}
-                            # Add 20 second timeout per future (fail faster than default 30s+retries)
-                            try:
-                                for future in as_completed(futures, timeout=20):
-                                    try:
-                                        all_filings.extend(future.result(timeout=1))
-                                    except (FutureTimeoutError, Exception):
-                                        # Skip failed forms, continue with others
-                                        pass
-                            except FutureTimeoutError:
-                                # Overall timeout - return what we have so far
-                                pass
-                        current_filings = all_filings
-                    else:
-                        current_filings = get_current_filings(form=edgar_form_type, page_size=200)
+                            all_filings = []
+                            # Set max_workers to 4 (instead of 8) to reduce parallel load on SEC.gov
+                            with ThreadPoolExecutor(max_workers=4) as executor:
+                                futures = {executor.submit(fetch_form, form): form for form in core_forms}
+                                # Add 20 second timeout per future (fail faster than default 30s+retries)
+                                try:
+                                    for future in as_completed(futures, timeout=20):
+                                        try:
+                                            all_filings.extend(future.result(timeout=1))
+                                        except (FutureTimeoutError, Exception):
+                                            # Skip failed forms, continue with others
+                                            pass
+                                except FutureTimeoutError:
+                                    # Overall timeout - return what we have so far
+                                    pass
+                            current_filings = all_filings
+                        else:
+                            current_filings = get_current_filings(form=edgar_form_type, page_size=200)
 
-                    # Cache the result for 90 seconds
-                    _current_filings_cache.set(cache_key, current_filings)
+                        # Cache the fresh result
+                        _current_filings_cache.set(cache_key, current_filings)
+                    except Exception as fetch_err:
+                        # Fetch failed - fall back to stale cache if available
+                        if cached_result is not None:
+                            import logging
+                            logging.getLogger(__name__).info(
+                                f"Returning stale cache for {form_type} (fetch failed: {fetch_err})"
+                            )
+                            current_filings = cached_result
+                        else:
+                            raise  # No stale cache to fall back on
             except (ReadTimeout, TimeoutException) as e:
                 raise ValueError(
                     f"SEC.gov timeout: SEC EDGAR is responding slowly (>30s). "
@@ -234,17 +237,24 @@ class EdgarAdapter(FilingFetcher):
             cache_key = f"current_filings:{edgar_form_type}:{ticker}"
             cached_result, is_fresh = _current_filings_cache.get(cache_key, allow_stale=True)
 
-            if is_fresh or cached_result is not None:
-                # Fresh or stale cache hit - use it to avoid timeout
+            if is_fresh:
+                # Fresh cache hit - return immediately
                 current_for_company = cached_result
             else:
-                # Cache miss - fetch from SEC.gov
+                # Stale or cache miss - try to fetch fresh data
                 get_current_entries_on_page.cache_clear()
-                current_filings = get_current_filings(form=edgar_form_type, page_size=100)
-                # Filter for this company's CIK
-                current_for_company = [f for f in current_filings if f.cik == int(company.cik)]
-                # Cache the result for 90 seconds
-                _current_filings_cache.set(cache_key, current_for_company)
+                try:
+                    current_filings = get_current_filings(form=edgar_form_type, page_size=100)
+                    # Filter for this company's CIK
+                    current_for_company = [f for f in current_filings if f.cik == int(company.cik)]
+                    # Cache the fresh result
+                    _current_filings_cache.set(cache_key, current_for_company)
+                except Exception:
+                    # Fetch failed - fall back to stale cache if available
+                    if cached_result is not None:
+                        current_for_company = cached_result
+                    else:
+                        current_for_company = []
         except (ReadTimeout, TimeoutException) as e:
             # Log timeout but don't fail - historical filings still work
             import logging
