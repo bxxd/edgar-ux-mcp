@@ -45,11 +45,7 @@ class FetchFilingService:
         # Check if already cached (skip if force_refetch)
         cached_path = self.repository.get(ticker, form_type, filing.filing_date, format) if not force_refetch else None
 
-        if cached_path:
-            # Read from cache
-            content = cached_path.read_text(encoding='utf-8')
-            total_lines = self.searcher.count_lines(cached_path)
-        else:
+        if not cached_path:
             # Download from SEC
             content = self.fetcher.fetch(filing, format, include_exhibits)
 
@@ -63,16 +59,15 @@ class FetchFilingService:
                 total_lines=content.count('\n') + 1
             )
             cached_path = self.repository.save(filing_content)
-            total_lines = filing_content.total_lines
 
-        # Return with metadata
+        # Return metadata only — no content in memory
         return FilingContent(
             filing=filing,
-            content=content,
+            content="",
             format=format,
             path=cached_path,
             size_bytes=cached_path.stat().st_size,
-            total_lines=total_lines
+            total_lines=self.searcher.count_lines(cached_path)
         )
 
 
