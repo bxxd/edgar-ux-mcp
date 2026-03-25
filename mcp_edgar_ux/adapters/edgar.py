@@ -3,6 +3,7 @@ EDGAR Adapter
 
 Implements FilingFetcher port using edgartools library.
 """
+import logging
 import time
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FutureTimeoutError
@@ -21,11 +22,44 @@ except ImportError:
 from ..core.domain import Filing
 from ..core.ports import FilingFetcher
 
+logger = logging.getLogger(__name__)
+
+
+def _disable_edgartools_http_cache():
+    """
+    Disable edgartools' Hishel HTTP response cache.
+
+    edgartools caches full SEC filing HTTP responses (up to 161MB each) in ~/.edgar/_tcache/
+    using Hishel-File mode. When cached responses are accessed, they're deserialized into
+    Python memory. With "/Archives/edgar/data": True (cache forever), this causes unbounded
+    memory growth — we observed 1.8GB RSS from ~5000 cached responses.
+
+    We have our own disk cache in /var/idio-mcp-cache/sec-filings/, so edgartools' HTTP
+    cache is pure duplication. Disable it but keep rate limiting.
+    """
+    import edgar.httpclient as httpclient
+    old_mgr = httpclient.HTTP_MGR
+    new_mgr = httpclient.get_http_mgr(
+        cache_enabled=False,
+        request_per_sec_limit=httpclient.get_edgar_rate_limit_per_sec()
+    )
+    httpclient.HTTP_MGR = new_mgr
+    old_mgr.close()
+    logger.info("Disabled edgartools HTTP cache (rate limiting preserved)")
+
+
+# Disable edgartools HTTP cache on module load — we have our own disk cache
+_disable_edgartools_http_cache()
+
 
 # Time-based cache for current filings to avoid hammering SEC.gov
 # Cache TTL: 90 seconds (balances freshness vs. load)
 class TTLCache:
-    """Simple time-to-live cache with stale-while-revalidate support"""
+    """Simple time-to-live cache with stale-while-revalidate support.
+
+    Stores only lightweight domain objects (Filing dataclasses), not raw
+    edgartools objects, to avoid retaining heavy parsed state in memory.
+    """
     def __init__(self, ttl_seconds: int = 90, stale_ttl_seconds: int = 300):
         self.ttl = ttl_seconds
         self.stale_ttl = stale_ttl_seconds  # How long to keep stale data
@@ -55,7 +89,8 @@ class TTLCache:
 
 # Global TTL cache for current filings
 # Fresh: 90s, Stale-acceptable: 24 hours (serve during SEC.gov outages)
-_current_filings_cache = TTLCache(ttl_seconds=90, stale_ttl_seconds=86400)
+# Fresh: 90s, Stale-acceptable: 1 hour (serve during SEC.gov slowness)
+_current_filings_cache = TTLCache(ttl_seconds=90, stale_ttl_seconds=3600)
 
 # Core form types for 'CORE' filter - essential filings only
 CORE_FORM_TYPES = {
@@ -134,12 +169,13 @@ class EdgarAdapter(FilingFetcher):
 
             try:
                 # Check TTL cache first (stale-while-revalidate pattern)
+                # Cache stores domain Filing objects (lightweight), not raw edgartools objects
                 cache_key = f"current_filings:{form_type}"
                 cached_result, is_fresh = _current_filings_cache.get(cache_key, allow_stale=True)
 
                 if is_fresh:
-                    # Fresh cache hit - return immediately
-                    current_filings = cached_result
+                    # Fresh cache hit - already domain models, return directly
+                    return cached_result
                 else:
                     # Stale or cache miss - try to fetch fresh data
                     # Clear edgartools' LRU cache to ensure we get fresh data when TTL expires
@@ -157,7 +193,7 @@ class EdgarAdapter(FilingFetcher):
                                 except Exception:
                                     return []
 
-                            all_filings = []
+                            raw_filings = []
                             # Set max_workers to 4 (instead of 8) to reduce parallel load on SEC.gov
                             with ThreadPoolExecutor(max_workers=4) as executor:
                                 futures = {executor.submit(fetch_form, form): form for form in core_forms}
@@ -165,27 +201,48 @@ class EdgarAdapter(FilingFetcher):
                                 try:
                                     for future in as_completed(futures, timeout=20):
                                         try:
-                                            all_filings.extend(future.result(timeout=1))
+                                            raw_filings.extend(future.result(timeout=1))
                                         except (FutureTimeoutError, Exception):
                                             # Skip failed forms, continue with others
                                             pass
                                 except FutureTimeoutError:
                                     # Overall timeout - return what we have so far
                                     pass
-                            current_filings = all_filings
                         else:
-                            current_filings = get_current_filings(form=edgar_form_type, page_size=200)
+                            raw_filings = list(get_current_filings(form=edgar_form_type, page_size=200))
 
-                        # Cache the fresh result
-                        _current_filings_cache.set(cache_key, current_filings)
+                        # Convert to lightweight domain models BEFORE caching
+                        # This ensures raw edgartools objects (with parsed HTML, DataFrames, etc.)
+                        # are not retained in memory via the TTL cache
+                        result = [to_domain_filing_no_ticker(f) for f in raw_filings]
+                        del raw_filings  # Release edgartools objects immediately
+
+                        # Filter to core form types when 'CORE' is specified
+                        if form_type == 'CORE':
+                            result = [f for f in result if f.form_type in CORE_FORM_TYPES]
+
+                        # Sort by date descending (most recent first)
+                        result.sort(key=lambda x: x.filing_date, reverse=True)
+
+                        # Deduplicate by (ticker, form_type, filing_date) - keep first for each
+                        seen = set()
+                        deduplicated = []
+                        for filing in result:
+                            key = (filing.ticker, filing.form_type, filing.filing_date)
+                            if key not in seen:
+                                deduplicated.append(filing)
+                                seen.add(key)
+
+                        # Cache the processed domain models
+                        _current_filings_cache.set(cache_key, deduplicated)
+                        return deduplicated
                     except Exception as fetch_err:
                         # Fetch failed - fall back to stale cache if available
                         if cached_result is not None:
-                            import logging
-                            logging.getLogger(__name__).info(
+                            logger.info(
                                 f"Returning stale cache for {form_type} (fetch failed: {fetch_err})"
                             )
-                            current_filings = cached_result
+                            return cached_result
                         else:
                             raise  # No stale cache to fall back on
             except (ReadTimeout, TimeoutException) as e:
@@ -203,76 +260,14 @@ class EdgarAdapter(FilingFetcher):
                     )
                 raise ValueError(f"Failed to get latest filings: {str(e)}")
 
-            # Convert to domain models
-            result = [to_domain_filing_no_ticker(f) for f in current_filings]
-
-            # Filter to core form types when 'CORE' is specified
-            # SEC API returns variants (e.g., "S-4 POS" when querying "S-4"), so filter strictly
-            if form_type == 'CORE':
-                result = [f for f in result if f.form_type in CORE_FORM_TYPES]
-
-            # Sort by date descending (most recent first)
-            result.sort(key=lambda x: x.filing_date, reverse=True)
-
-            # Deduplicate by (ticker, form_type, filing_date) - keep first for each
-            seen = set()
-            deduplicated = []
-            for filing in result:
-                key = (filing.ticker, filing.form_type, filing.filing_date)
-                if key not in seen:
-                    deduplicated.append(filing)
-                    seen.add(key)
-
-            return deduplicated
-
         # If ticker specified, get filings for that specific company
         company = Company(ticker)
 
         # Get historical filings (up to ~10 PM EST previous day)
         historical_filings = company.get_filings(form=edgar_form_type if edgar_form_type else None)
 
-        # Get current/recent filings (same-day and recent)
-        try:
-            # Check TTL cache first (stale-while-revalidate pattern)
-            cache_key = f"current_filings:{edgar_form_type}:{ticker}"
-            cached_result, is_fresh = _current_filings_cache.get(cache_key, allow_stale=True)
-
-            if is_fresh:
-                # Fresh cache hit - return immediately
-                current_for_company = cached_result
-            else:
-                # Stale or cache miss - try to fetch fresh data
-                get_current_entries_on_page.cache_clear()
-                try:
-                    current_filings = get_current_filings(form=edgar_form_type, page_size=100)
-                    # Filter for this company's CIK
-                    current_for_company = [f for f in current_filings if f.cik == int(company.cik)]
-                    # Cache the fresh result
-                    _current_filings_cache.set(cache_key, current_for_company)
-                except Exception:
-                    # Fetch failed - fall back to stale cache if available
-                    if cached_result is not None:
-                        current_for_company = cached_result
-                    else:
-                        current_for_company = []
-        except (ReadTimeout, TimeoutException) as e:
-            # Log timeout but don't fail - historical filings still work
-            import logging
-            logging.getLogger(__name__).warning(
-                f"SEC.gov timeout while fetching current filings for {ticker}: {str(e)}"
-            )
-            current_for_company = []
-        except Exception as e:
-            # Log other errors but don't fail - historical filings still work
-            import logging
-            logging.getLogger(__name__).warning(
-                f"Failed to fetch current filings for {ticker}: {str(e)}"
-            )
-            current_for_company = []
-
         # Helper to convert edgar filing to domain model
         def to_domain_filing(edgar_filing, ticker: str) -> Filing:
-            # Format filing date
             filing_date = edgar_filing.filing_date
             if hasattr(filing_date, 'strftime'):
                 date_str = filing_date.strftime('%Y-%m-%d')
@@ -291,19 +286,50 @@ class EdgarAdapter(FilingFetcher):
                 cik=str(edgar_filing.cik) if hasattr(edgar_filing, 'cik') else None
             )
 
-        # Convert all filings to domain models
+        # Convert historical filings to domain models
         result = []
-
-        # Add historical filings
         if historical_filings:
             for filing in historical_filings:
                 result.append(to_domain_filing(filing, ticker))
 
+        # Get current/recent filings (same-day and recent)
+        # TTL cache stores domain Filing objects, not raw edgartools objects
+        current_domain_filings = []
+        try:
+            cache_key = f"current_filings:{edgar_form_type}:{ticker}"
+            cached_result, is_fresh = _current_filings_cache.get(cache_key, allow_stale=True)
+
+            if is_fresh:
+                # Fresh cache hit - already domain models
+                current_domain_filings = cached_result
+            else:
+                # Stale or cache miss - try to fetch fresh data
+                get_current_entries_on_page.cache_clear()
+                try:
+                    raw_current = list(get_current_filings(form=edgar_form_type, page_size=100))
+                    # Filter for this company's CIK and convert to domain models
+                    company_cik = int(company.cik)
+                    current_domain_filings = [
+                        to_domain_filing(f, ticker)
+                        for f in raw_current if f.cik == company_cik
+                    ]
+                    del raw_current  # Release edgartools objects
+                    # Cache domain models
+                    _current_filings_cache.set(cache_key, current_domain_filings)
+                except Exception:
+                    # Fetch failed - fall back to stale cache if available
+                    if cached_result is not None:
+                        current_domain_filings = cached_result
+        except (ReadTimeout, TimeoutException) as e:
+            logger.warning(f"SEC.gov timeout fetching current filings for {ticker}: {e}")
+        except Exception as e:
+            logger.warning(f"Failed to fetch current filings for {ticker}: {e}")
+
         # Add current filings (deduplicate by accession number)
         seen_accessions = {f.accession_number for f in result}
-        for filing in current_for_company:
+        for filing in current_domain_filings:
             if filing.accession_number not in seen_accessions:
-                result.append(to_domain_filing(filing, ticker))
+                result.append(filing)
                 seen_accessions.add(filing.accession_number)
 
         # Filter to core form types when 'CORE' is specified
