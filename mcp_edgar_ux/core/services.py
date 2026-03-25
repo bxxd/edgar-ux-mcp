@@ -37,7 +37,7 @@ class FetchFilingService:
         """
         Fetch filing and cache it.
 
-        Returns FilingContent with path, preview, and metadata.
+        Returns FilingContent with path and metadata (content not loaded into memory).
         """
         # Get filing metadata
         filing = self.fetcher.get_latest(ticker, form_type, date)
@@ -45,7 +45,10 @@ class FetchFilingService:
         # Check if already cached (skip if force_refetch)
         cached_path = self.repository.get(ticker, form_type, filing.filing_date, format) if not force_refetch else None
 
-        if not cached_path:
+        if cached_path:
+            # Already cached — get metadata without reading content into memory
+            total_lines = self.searcher.count_lines(cached_path)
+        else:
             # Download from SEC
             content = self.fetcher.fetch(filing, format, include_exhibits)
 
@@ -59,15 +62,17 @@ class FetchFilingService:
                 total_lines=content.count('\n') + 1
             )
             cached_path = self.repository.save(filing_content)
+            total_lines = filing_content.total_lines
+            del content  # Release filing text (can be 10-160MB)
 
-        # Return metadata only — no content in memory
+        # Return metadata only — caller uses path for content access
         return FilingContent(
             filing=filing,
-            content="",
+            content="",  # Not loaded; use path with Read/Grep tools
             format=format,
             path=cached_path,
             size_bytes=cached_path.stat().st_size,
-            total_lines=self.searcher.count_lines(cached_path)
+            total_lines=total_lines
         )
 
 
@@ -173,26 +178,15 @@ class FinancialStatementsService:
         """
         Get multi-period financial statements using edgartools Entity Facts API.
 
-        This uses edgartools' built-in caching (HTTP cache + LRU cache).
-        No custom caching needed - edgartools handles it automatically.
-
         Args:
             ticker: Stock ticker (e.g., "TSLA", "AAPL")
             statement_type: Which statements to return
 
         Returns:
-            Dict with statement data and metadata:
-            {
-                "company_name": str,
-                "cik": str,
-                "ticker": str,
-                "statements": {
-                    "income": MultiPeriodStatement or None,
-                    "balance": MultiPeriodStatement or None,
-                    "cash_flow": MultiPeriodStatement or None
-                }
-            }
+            Dict with statement data and metadata
         """
+        from edgar.entity.entity_facts import get_company_facts
+
         # Get company and facts
         company = Company(ticker)
         facts = company.get_facts()
@@ -222,5 +216,10 @@ class FinancialStatementsService:
 
         if statement_type in ("all", "cash_flow"):
             result["statements"]["cash_flow"] = facts.cash_flow()
+
+        # Clear edgartools' LRU cache for company facts to prevent memory accumulation.
+        # Each company's facts JSON can be 5-20MB parsed; the lru_cache(maxsize=32) would
+        # retain up to 32 of these indefinitely. We've already extracted what we need.
+        get_company_facts.cache_clear()
 
         return result
