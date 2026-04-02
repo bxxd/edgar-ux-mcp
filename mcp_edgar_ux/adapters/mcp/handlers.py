@@ -152,10 +152,10 @@ class MCPHandlers:
                 form_type=form_type
             )
 
-            # Build map of cached filings by (ticker, filing_date, format)
+            # Build map of cached filings by (ticker, form_type, filing_date)
             cached_map = {}
             for c in cached:
-                key = (c.ticker, c.filing_date)
+                key = (c.ticker, c.form_type, c.filing_date)
                 if key not in cached_map:
                     cached_map[key] = {}
                 cached_map[key][c.format] = {
@@ -166,7 +166,7 @@ class MCPHandlers:
             # Merge available with cached info
             filings = []
             for filing in available:
-                key = (filing.ticker, filing.filing_date)
+                key = (filing.ticker, filing.form_type.upper(), filing.filing_date)
                 cached_info = cached_map.get(key, {})
                 filings.append({
                     "ticker": filing.ticker,
