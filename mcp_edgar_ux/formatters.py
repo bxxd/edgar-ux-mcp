@@ -529,7 +529,7 @@ def format_insider_activity(result: dict[str, Any]) -> str:
             lines.append(f"  {f['form_type']:<5} filed {f['filing_date']}  acc {accepted}{flag}  {f['accession_number']}")
             for t in f["transactions"]:
                 px = f" @ {_fmt_num(t['price'])}" if t["price"] is not None else ""
-                val = f"  = ${_fmt_num(t['value'])}" if t["value"] else ""
+                val = f"  = ${_fmt_num(t['value'])}" if t["value"] is not None else ""
                 post = f"  post {_fmt_num(t['shares_owned_after'])}" if t["shares_owned_after"] is not None else ""
                 lines.append(f"        {t['date']}  {t['code']:<4} {t['description'][:28]:<28} {_fmt_num(t['shares']):>12}{px}{val}{post}")
             for fn_id, fn_text in f["footnotes"].items():
