@@ -494,21 +494,19 @@ class EdgarAdapter(FilingFetcher):
         m = re.search(r"<aff10b5One>\s*([^<\s]+)\s*</aff10b5One>", xml)
         aff10b5one = (m.group(1).lower() in ("1", "true")) if m else None
 
+        # Read per-transaction rows from the ownership tables directly.
+        # NOT ownership.to_dataframe() — its summary collapses per-transaction
+        # dates and post-transaction holdings to filing-level values (every row
+        # would show the reporting-period date and the FINAL post position).
         transactions = []
         if base_form != "3":  # Form 3 is initial holdings, no transactions
-            df = ownership.to_dataframe()  # detailed: one row per transaction
-            if "Code" in df.columns:
-                for _, row in df.iterrows():
-                    date_val = row.get("Date")
-                    transactions.append(InsiderTransaction(
-                        date=date_val.strftime("%Y-%m-%d") if hasattr(date_val, "strftime") else str(date_val),
-                        code=str(row.get("Code", "")),
-                        description=str(row.get("Description", "")),
-                        shares=_safe_float(row.get("Shares")),
-                        price=_safe_float(row.get("Price")),
-                        value=_safe_float(row.get("Value")),
-                        shares_owned_after=_safe_float(row.get("Remaining Shares")),
-                    ))
+            transactions.extend(
+                self._table_transactions(ownership.non_derivative_table.transactions)
+            )
+            if ownership.derivative_table is not None and ownership.derivative_table.has_transactions:
+                transactions.extend(
+                    self._table_transactions(ownership.derivative_table.transactions, derivative=True)
+                )
 
         footnotes = (
             ownership.footnotes.summary()["footnote"].to_dict()
@@ -528,6 +526,41 @@ class EdgarAdapter(FilingFetcher):
             footnotes=footnotes,
             remarks=ownership.remarks or None,
         )
+
+    @staticmethod
+    def _table_transactions(transactions, derivative: bool = False) -> list[InsiderTransaction]:
+        """Per-transaction rows from a (Non)DerivativeTransactions table.
+
+        Both tables carry Date/Code/Shares/Price/Remaining/footnotes per
+        transaction; derivative rows add Security/Underlying.
+        """
+        if transactions is None or transactions.empty:
+            return []
+
+        rows = []
+        for _, row in transactions.data.iterrows():
+            desc = str(row.get("TransactionType") or "").replace("_", " ").title()
+            if derivative:
+                security = str(row.get("Security") or "").strip()
+                desc = f"{desc or 'Derivative'} ({security})" if security else f"{desc or 'Derivative'}"
+            elif not desc:
+                desc = str(row.get("Code", ""))
+            fn = str(row.get("footnotes") or "").strip()
+            if fn:
+                desc = f"{desc} [{fn}]"
+
+            shares = _safe_float(row.get("Shares"))
+            price = _safe_float(row.get("Price"))
+            rows.append(InsiderTransaction(
+                date=str(row.get("Date", "")),
+                code=str(row.get("Code", "")),
+                description=desc,
+                shares=shares,
+                price=price,
+                value=round(shares * price, 2) if shares is not None and price is not None else None,
+                shares_owned_after=_safe_float(row.get("Remaining")),
+            ))
+        return rows
 
     def _parse_form144(self, edgar_filing, acceptance: Optional[str]) -> InsiderFiling:
         """Parse Form 144 (proposed sale notice)"""
