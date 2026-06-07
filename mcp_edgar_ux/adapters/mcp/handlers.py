@@ -32,8 +32,8 @@ class MCPHandlers:
                 ticker=ticker,
                 form_type=form_type
             )
-            # Normalize format names: cache uses extensions (txt, md, html), API uses full names
-            format_map = {"text": "txt", "markdown": "md", "html": "html"}
+            # Normalize format names: cache uses extensions (txt, md, html, xml), API uses full names
+            format_map = {"text": "txt", "markdown": "md", "html": "html", "xml": "xml"}
             normalized_format = format_map.get(format, format)
             cached_dates = {(c.filing_date, c.format) for c in cached_filings}
 
@@ -138,18 +138,21 @@ class MCPHandlers:
         ticker: Optional[str],
         form_type: str,
         start: int = 0,
-        max: int = 15
+        max: int = 15,
+        since: Optional[str] = None
     ) -> dict[str, Any]:
         """List available filings (both cached and from SEC)
 
         If ticker is None, returns latest filings across all companies.
+        If since is set (ISO timestamp), only filings accepted at/after it.
         """
         try:
             # Use service from container
             available, cached = await asyncio.to_thread(
                 self.container.list_filings.execute,
                 ticker=ticker,
-                form_type=form_type
+                form_type=form_type,
+                since=since
             )
 
             # Build map of cached filings by (ticker, form_type, filing_date)
@@ -172,6 +175,7 @@ class MCPHandlers:
                     "ticker": filing.ticker,
                     "form_type": filing.form_type,
                     "filing_date": filing.filing_date,
+                    "acceptance_datetime": filing.acceptance_datetime,
                     "company_name": filing.company_name,
                     "accession_number": filing.accession_number,
                     "sec_url": filing.sec_url,
@@ -181,6 +185,7 @@ class MCPHandlers:
             return {
                 "success": True,
                 "requested_form_type": form_type,  # Preserve requested form_type for header
+                "since": since,
                 "filings": filings,
                 "count": len(filings),
                 "cached_count": len(cached),
@@ -193,6 +198,60 @@ class MCPHandlers:
             return {
                 "success": False,
                 "error": f"Failed to list filings: {str(e)}"
+            }
+
+    async def insider_activity(
+        self,
+        ticker: str,
+        days: int = 30
+    ) -> dict[str, Any]:
+        """Insider activity (Forms 3/4/5/144) over the last N days"""
+        try:
+            filings = await asyncio.to_thread(
+                self.container.insider_activity.execute,
+                ticker=ticker,
+                days=days
+            )
+
+            return {
+                "success": True,
+                "ticker": ticker.upper(),
+                "days": days,
+                "filings": [
+                    {
+                        "filer": f.filer,
+                        "position": f.position,
+                        "form_type": f.form_type,
+                        "filing_date": f.filing_date,
+                        "acceptance_datetime": f.acceptance_datetime,
+                        "accession_number": f.accession_number,
+                        "sec_url": f.sec_url,
+                        "aff10b5One": f.aff10b5One,
+                        "transactions": [
+                            {
+                                "date": t.date,
+                                "code": t.code,
+                                "description": t.description,
+                                "shares": t.shares,
+                                "price": t.price,
+                                "value": t.value,
+                                "shares_owned_after": t.shares_owned_after,
+                            }
+                            for t in f.transactions
+                        ],
+                        "footnotes": f.footnotes,
+                        "remarks": f.remarks,
+                    }
+                    for f in filings
+                ],
+                "count": len(filings),
+            }
+
+        except Exception as e:
+            return {
+                "success": False,
+                "ticker": ticker.upper(),
+                "error": f"Failed to get insider activity for {ticker}: {str(e)}"
             }
 
     async def get_financial_statements(

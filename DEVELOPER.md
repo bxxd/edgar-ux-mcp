@@ -96,15 +96,20 @@ path = await asyncio.to_thread(cache.save, ...)
 
 **Why**: Keeps server responsive, allows concurrent MCP requests
 
-### MCP Tools (4 tools)
+### MCP Tools (5 tools)
 
-**1. `list_filings(ticker, form_type)` - DISCOVERY**
+**1. `list_filings(ticker, form_type, since=None)` - DISCOVERY**
 - Shows available filings (both cached + available from SEC)
-- Returns: Table with cached indicator (✓), dates, sizes
+- Every filing shows ACCEPTANCE datetime (ET) — the EDGAR-native time axis
+- `since=<ISO timestamp>` filters on acceptance time (naive = US/Eastern) —
+  diff "what landed after the last sweep ran" without hand-rolling the atom feed
+- Returns: Table with cached indicator, dates, acceptance times
 
-**2. `fetch_filing(ticker, form_type, date=None)` - DOWNLOAD**
+**2. `fetch_filing(ticker, form_type, date=None, format="text")` - DOWNLOAD**
 - Downloads filing (if not cached), returns path
 - Filing saved to disk (not loaded into context)
+- `format="xml"` = lossless passthrough for Forms 3/4/5/144 (the text render
+  DROPS the aff10b5One checkbox and all footnotes)
 - Returns: Path + metadata
 
 **3. `search_filing(ticker, form_type, pattern, context_lines=2)` - CONTENT SEARCH**
@@ -118,13 +123,22 @@ path = await asyncio.to_thread(cache.save, ...)
 - Last 4 annual periods from SEC aggregated data
 - SIMPLIFIED only - use fetch_filing() for detailed analysis
 
+**5. `insider_activity(ticker, days=30)` - OWNERSHIP FORMS**
+- Forms 3/4/5/144 for a ticker, series-aggregated per filer (the signal is the
+  SERIES — single-filing reads miss sustained distribution)
+- Per filing: filer, position, code, shares, price, post-holdings,
+  **aff10b5One** (10b5-1 checkbox, parsed from raw XML — edgartools drops it),
+  footnotes, acceptance time
+- Form 144 rows are PROPOSED sales (notices); Form 4/5 rows are executions
+- Per-filer SERIES rollup: gross sold/bought + discretionary-vs-plan status
+
 ### Cache Strategy
 
 **Default Location**: `/var/idio-mcp-cache/sec-filings/`
 **Configurable**: Set `CACHE_DIR` environment variable
 
 **Organization**: `/{TICKER}/{FORM}/{YYYY-MM-DD}.{ext}`
-**Formats**: `.txt` (preferred), `.md`, `.html`
+**Formats**: `.txt` (preferred), `.md`, `.html`, `.xml` (raw passthrough for ownership forms)
 
 ---
 
@@ -280,7 +294,7 @@ CACHE_DIR=/tmp/sec-filings-test ./cli fetch TSLA 10-K
 
 **MCP Integration**: Complete ✅
 - HTTP/SSE server (170 lines, port 5012 dev / 5002 prod)
-- Four tools: fetch_filing, search_filing, list_filings, get_financial_statements
+- Five tools: fetch_filing, search_filing, list_filings, get_financial_statements, insider_activity
 - Shared tool definitions (DRY)
 - BBG Lite formatted output
 

@@ -6,13 +6,22 @@ This package contains:
 - ports.py: Port interfaces (abstractions for external dependencies)
 - services.py: Application services (use cases)
 """
-from .domain import Filing, CachedFiling, FilingContent, SearchMatch, SearchResult
+from .domain import (
+    Filing,
+    CachedFiling,
+    FilingContent,
+    InsiderFiling,
+    InsiderTransaction,
+    SearchMatch,
+    SearchResult
+)
 from .ports import FilingRepository, FilingFetcher, FilingSearcher
 from .services import (
     FetchFilingService,
     ListFilingsService,
     SearchFilingService,
-    FinancialStatementsService
+    FinancialStatementsService,
+    InsiderActivityService
 )
 
 __all__ = [
@@ -20,6 +29,8 @@ __all__ = [
     "Filing",
     "CachedFiling",
     "FilingContent",
+    "InsiderFiling",
+    "InsiderTransaction",
     "SearchMatch",
     "SearchResult",
     # Ports
@@ -30,5 +41,6 @@ __all__ = [
     "FetchFilingService",
     "ListFilingsService",
     "SearchFilingService",
-    "FinancialStatementsService"
+    "FinancialStatementsService",
+    "InsiderActivityService"
 ]

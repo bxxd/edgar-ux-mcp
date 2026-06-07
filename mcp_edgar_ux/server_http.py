@@ -14,12 +14,15 @@ Configuration:
 import logging
 import os
 import signal
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import anyio
 from mcp.server import Server
 from mcp.server.sse import SseServerTransport
+from mcp.server.streamable_http import StreamableHTTPServerTransport
 from mcp.types import TextContent, Tool
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -32,7 +35,8 @@ from .formatters import (
     format_fetch_filing,
     format_search_filing,
     format_list_filings,
-    format_financial_statements
+    format_financial_statements,
+    format_insider_activity
 )
 
 # Configure logging with millisecond precision
@@ -106,6 +110,13 @@ mcp_server = Server("edgar-ux-mcp")
 # SSE transport for multi-client support
 sse_transport = SseServerTransport("/messages")
 
+# Streamable HTTP transport — stateless, survives server restarts
+# (SSE sessions die on restart; each streamable call is self-contained)
+streamable_transport = StreamableHTTPServerTransport(
+    mcp_session_id=None,
+    is_json_response_enabled=True,
+)
+
 
 @mcp_server.list_tools()  # type: ignore[misc,no-untyped-call]
 async def list_tools() -> list[Tool]:
@@ -114,7 +125,8 @@ async def list_tools() -> list[Tool]:
         Tool(**TOOL_SCHEMAS["fetch_filing"]),
         Tool(**TOOL_SCHEMAS["search_filing"]),
         Tool(**TOOL_SCHEMAS["list_filings"]),
-        Tool(**TOOL_SCHEMAS["get_financial_statements"])
+        Tool(**TOOL_SCHEMAS["get_financial_statements"]),
+        Tool(**TOOL_SCHEMAS["insider_activity"])
     ]
 
 
@@ -134,7 +146,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         "fetch_filing": format_fetch_filing,
         "search_filing": format_search_filing,
         "list_filings": format_list_filings,
-        "get_financial_statements": format_financial_statements
+        "get_financial_statements": format_financial_statements,
+        "insider_activity": format_insider_activity
     }
 
     formatter = formatters.get(name)
@@ -177,7 +190,14 @@ async def _dispatch_tool(name: str, arguments: dict[str, Any]) -> Any:
             ticker=arguments.get("ticker"),
             form_type=arguments["form_type"],
             start=arguments.get("start", 0),
-            max=arguments.get("max", 15)
+            max=arguments.get("max", 15),
+            since=arguments.get("since")
+        )
+
+    elif name == "insider_activity":
+        return await handlers.insider_activity(
+            ticker=arguments["ticker"],
+            days=arguments.get("days", 30)
         )
 
     elif name == "get_financial_statements":
@@ -211,13 +231,30 @@ async def handle_sse(request: Request) -> Response:
     return Response()
 
 
+@asynccontextmanager
+async def lifespan(app):
+    """Run the MCP server against the streamable transport for the app's lifetime."""
+    async with streamable_transport.connect() as (read_stream, write_stream):
+        async with anyio.create_task_group() as tg:
+            async def run_streamable():
+                await mcp_server.run(
+                    read_stream, write_stream, mcp_server.create_initialization_options(),
+                    stateless=True,
+                )
+
+            tg.start_soon(run_streamable)
+            yield
+            tg.cancel_scope.cancel()
+
+
 routes = [
     Route("/ping", handle_ping),
+    Mount("/mcp", app=streamable_transport.handle_request),
     Route("/sse", handle_sse),
     Mount("/messages", app=sse_transport.handle_post_message),
 ]
 
-app = Starlette(debug=True, routes=routes)
+app = Starlette(debug=True, routes=routes, lifespan=lifespan)
 
 
 # Graceful shutdown on SIGTERM

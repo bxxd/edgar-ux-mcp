@@ -8,7 +8,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Optional
 
-from .domain import Filing, CachedFiling, FilingContent, SearchMatch
+from .domain import Filing, CachedFiling, FilingContent, InsiderFiling, SearchMatch
 
 
 class FilingRepository(ABC):
@@ -62,6 +62,11 @@ class FilingFetcher(ABC):
 
         If ticker is None, returns latest filing across all companies.
         """
+        pass
+
+    @abstractmethod
+    def get_insider_activity(self, ticker: str, days: int) -> list[InsiderFiling]:
+        """Fetch and parse ownership filings (Forms 3/4/5/144) for the last N days"""
         pass
 
 

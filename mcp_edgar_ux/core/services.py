@@ -4,11 +4,28 @@ Application Services - Use cases that orchestrate domain logic
 These are the entry points to the core. They coordinate between
 domain models and ports, but contain no infrastructure concerns.
 """
+from datetime import datetime
 from typing import Optional, Literal
+from zoneinfo import ZoneInfo
+
 from edgar import Company
 
-from .domain import Filing, FilingContent, SearchResult, CachedFiling
+from .domain import Filing, FilingContent, InsiderFiling, SearchResult, CachedFiling
 from .ports import FilingRepository, FilingFetcher, FilingSearcher
+
+EASTERN = ZoneInfo("America/New_York")
+
+
+def _parse_since(since: str) -> datetime:
+    """Parse a 'since' ISO timestamp. Naive timestamps are assumed US/Eastern (EDGAR-native)."""
+    try:
+        # 'Z' suffix normalized for the declared python floor (^3.10; native from 3.11)
+        dt = datetime.fromisoformat(since.replace("Z", "+00:00"))
+    except ValueError as e:
+        raise ValueError(f"since must be an ISO 8601 timestamp, got: {since!r}") from e
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=EASTERN)
+    return dt
 
 
 class FetchFilingService:
@@ -87,11 +104,19 @@ class ListFilingsService:
         self.repository = repository
         self.fetcher = fetcher
 
-    def execute(self, ticker: Optional[str], form_type: str) -> tuple[list[Filing], list[CachedFiling]]:
+    def execute(
+        self,
+        ticker: Optional[str],
+        form_type: str,
+        since: Optional[str] = None
+    ) -> tuple[list[Filing], list[CachedFiling]]:
         """
         List all available filings and which ones are cached.
 
         If ticker is None, returns latest filings across all companies.
+        If since is set (ISO timestamp, naive = US/Eastern), only filings
+        accepted at/after that moment are returned — the acceptance-time axis
+        for diffing "what landed after the last sweep ran".
 
         Returns:
             (available_filings, cached_filings)
@@ -99,10 +124,25 @@ class ListFilingsService:
         # Get all available from SEC
         available = self.fetcher.list_available(ticker, form_type)
 
+        if since:
+            since_dt = _parse_since(since)
+            available = [f for f in available if self._accepted_at_or_after(f, since_dt)]
+
         # Get cached filings for this ticker/form (or all if ticker is None)
         cached = self.repository.list_all(ticker, form_type)
 
         return available, cached
+
+    @staticmethod
+    def _accepted_at_or_after(filing: Filing, since_dt: datetime) -> bool:
+        """Filter on acceptance time; fall back to filing date if acceptance unavailable."""
+        if filing.acceptance_datetime:
+            try:
+                return datetime.fromisoformat(filing.acceptance_datetime) >= since_dt
+            except ValueError:
+                pass
+        # No acceptance timestamp — keep if the filing DATE could plausibly be in range
+        return filing.filing_date >= since_dt.date().isoformat()
 
 
 class SearchFilingService:
@@ -165,6 +205,23 @@ class SearchFilingService:
             total_matches=total_count,
             file_path=cached_path
         )
+
+
+class InsiderActivityService:
+    """Use case: Insider activity (Forms 3/4/5/144), series-aggregated per filer.
+
+    The signal is the SERIES — single-filing reads miss sustained distribution
+    (e.g. MP 5/12 + 5/27 + 6/03). Returns parsed filings; aggregation by filer
+    happens at the formatting layer so the raw per-filing data stays available.
+    """
+
+    def __init__(self, fetcher: FilingFetcher):
+        self.fetcher = fetcher
+
+    def execute(self, ticker: str, days: int = 30) -> list[InsiderFiling]:
+        if days < 1 or days > 365:
+            raise ValueError("days must be between 1 and 365")
+        return self.fetcher.get_insider_activity(ticker, days)
 
 
 class FinancialStatementsService:
