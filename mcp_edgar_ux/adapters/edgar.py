@@ -63,7 +63,7 @@ def _feed_accepted_column(current_filings) -> list:
     """
     if 'accepted' in current_filings.data.column_names:
         return current_filings.data['accepted'].to_pylist()
-    return [None] * len(current_filings.data)
+    return [None] * current_filings.data.num_rows
 
 
 def _disable_edgartools_http_cache():
