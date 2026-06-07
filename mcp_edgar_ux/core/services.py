@@ -18,7 +18,11 @@ EASTERN = ZoneInfo("America/New_York")
 
 def _parse_since(since: str) -> datetime:
     """Parse a 'since' ISO timestamp. Naive timestamps are assumed US/Eastern (EDGAR-native)."""
-    dt = datetime.fromisoformat(since)
+    try:
+        # 'Z' suffix normalized for the declared python floor (^3.10; native from 3.11)
+        dt = datetime.fromisoformat(since.replace("Z", "+00:00"))
+    except ValueError as e:
+        raise ValueError(f"since must be an ISO 8601 timestamp, got: {since!r}") from e
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=EASTERN)
     return dt
