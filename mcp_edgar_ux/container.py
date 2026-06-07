@@ -10,7 +10,8 @@ from .core import (
     FetchFilingService,
     ListFilingsService,
     SearchFilingService,
-    FinancialStatementsService
+    FinancialStatementsService,
+    InsiderActivityService
 )
 
 
@@ -43,3 +44,5 @@ class Container:
         )
 
         self.get_financials = FinancialStatementsService()
+
+        self.insider_activity = InsiderActivityService(fetcher=self.fetcher)

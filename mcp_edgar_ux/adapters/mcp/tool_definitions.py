@@ -12,6 +12,10 @@ TOOL_SCHEMAS = {
         "description": """Download SEC filing to disk. Returns path for Read/Grep/search_filing.
 
 fetch_filing("TSLA", "10-K") → {path: ".../TSLA/10-K/2024-01-29.txt", cached: true}
+fetch_filing("MP", "4", format="xml") → raw XML (lossless: 10b5-1 checkbox, footnotes)
+
+Use format="xml" for Forms 3/4/5/144 — the text render DROPS the aff10b5One
+checkbox and footnotes. For aggregated insider reads, prefer insider_activity().
 """,
         "inputSchema": {
             "type": "object",
@@ -30,8 +34,8 @@ fetch_filing("TSLA", "10-K") → {path: ".../TSLA/10-K/2024-01-29.txt", cached: 
                 },
                 "format": {
                     "type": "string",
-                    "enum": ["text", "markdown", "html"],
-                    "description": "Output format (text=clean, markdown=may have XBRL, html=raw)"
+                    "enum": ["text", "markdown", "html", "xml"],
+                    "description": "Output format (text=clean, markdown=may have XBRL, html=raw, xml=lossless passthrough for Forms 3/4/5/144)"
                 },
                 "preview_lines": {
                     "type": "integer",
@@ -103,6 +107,11 @@ list_filings("TSLA", "10-K") → TSLA's 10-Ks only
 list_filings("TSLA", "ALL") → all of TSLA's filings
 list_filings(form_type="CORE") → latest CORE filings across all companies
 list_filings("TSLA", "10-K", start=15) → pagination
+list_filings(form_type="CORE", since="2026-06-05T16:15:00") → accepted at/after timestamp (ET)
+
+Each filing shows acceptance datetime (ET) — use 'since' to diff what landed
+after your last sweep. NOTE: CORE excludes ownership forms (3/4/5/144) — use
+insider_activity(ticker) for those.
 """,
         "inputSchema": {
             "type": "object",
@@ -124,9 +133,42 @@ list_filings("TSLA", "10-K", start=15) → pagination
                     "type": "integer",
                     "description": "Maximum filings to return",
                     "default": 15
+                },
+                "since": {
+                    "type": "string",
+                    "description": "ISO timestamp filter on ACCEPTANCE time (naive = US/Eastern). Only filings accepted at/after this moment. E.g. '2026-06-05T16:15:00'"
                 }
             },
             "required": ["form_type"]
+        }
+    },
+    "insider_activity": {
+        "name": "insider_activity",
+        "description": """Insider activity (Forms 4/5/144 + Form 3) for a ticker, series-aggregated per filer.
+
+insider_activity("MP") → last 30 days: filer, code, shares, price, post-holdings,
+aff10b5One (10b5-1 plan checkbox), footnotes — grouped per filer so sustained
+distribution is visible (single-filing reads miss the series).
+
+insider_activity("MP", days=90) → wider window
+
+aff10b5One=False on sales = DISCRETIONARY (not under a trading plan) — decisive
+for insider-signal reads. Form 144 rows are PROPOSED sales (notice only).
+""",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "ticker": {
+                    "type": "string",
+                    "description": "Stock ticker (e.g. MP, TSLA)"
+                },
+                "days": {
+                    "type": "integer",
+                    "description": "Lookback window in days (1-365)",
+                    "default": 30
+                }
+            },
+            "required": ["ticker"]
         }
     },
     "get_financial_statements": {

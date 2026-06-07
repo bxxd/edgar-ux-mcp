@@ -10,8 +10,11 @@ Usage:
   ./cli search TSLA 10-K "supply chain"   # Search within filing
   ./cli list-filings 10-K                 # List latest 10-K filings across all companies
   ./cli list-filings 10-K --ticker TSLA   # List available TSLA 10-K filings
+  ./cli list-filings CORE --since 2026-06-05T16:15:00  # Accepted at/after timestamp (ET)
   ./cli financials TSLA                   # Get TSLA financial statements (all statements)
   ./cli financials TSLA --type income     # Get income statement only
+  ./cli insider MP                        # Insider activity (Forms 3/4/5/144), last 30 days
+  ./cli insider MP --days 90              # Wider window
 
 Fast iteration: Uses hexagonal core directly (no MCP layer)
 """
@@ -30,6 +33,7 @@ from .formatters import (
     format_search_filing,
     format_list_filings,
     format_financial_statements,
+    format_insider_activity,
 )
 
 
@@ -146,6 +150,7 @@ async def list_filings_command(
     ticker: str | None,
     form_type: str,
     cache_dir: str,
+    since: str | None = None,
 ) -> int:
     """List available SEC filings
 
@@ -157,7 +162,7 @@ async def list_filings_command(
         handlers = MCPHandlers(container)
 
         # Call handler
-        result = await handlers.list_filings(ticker=ticker, form_type=form_type)
+        result = await handlers.list_filings(ticker=ticker, form_type=form_type, since=since)
 
         # Use BBG Lite formatter
         print(format_list_filings(result))
@@ -204,6 +209,34 @@ async def financials_command(
         return 1
 
 
+async def insider_command(
+    ticker: str,
+    days: int,
+    cache_dir: str,
+) -> int:
+    """Get insider activity (Forms 3/4/5/144)"""
+    try:
+        # Initialize container
+        container = Container(cache_dir=cache_dir, user_agent=get_user_agent())
+        handlers = MCPHandlers(container)
+
+        # Call handler
+        result = await handlers.insider_activity(ticker=ticker, days=days)
+
+        # Use BBG Lite formatter
+        print(format_insider_activity(result))
+
+        if not result["success"]:
+            return 1
+
+        return 0
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc()
+        return 1
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="edgar-ux CLI - Test MCP tools without server restart"
@@ -226,9 +259,9 @@ def main():
     fetch_parser.add_argument("--date", help="Filing date filter (YYYY-MM-DD)")
     fetch_parser.add_argument(
         "--format",
-        choices=["text", "markdown", "html"],
+        choices=["text", "markdown", "html", "xml"],
         default="text",
-        help="Output format (default: text)"
+        help="Output format (default: text; xml = lossless passthrough for Forms 3/4/5/144)"
     )
     fetch_parser.add_argument(
         "--preview-lines",
@@ -250,6 +283,12 @@ def main():
     list_filings_parser = subparsers.add_parser("list-filings", help="List available filings")
     list_filings_parser.add_argument("form_type", help="Form type (e.g., 10-K)")
     list_filings_parser.add_argument("--ticker", help="Optional stock ticker (e.g., TSLA). Omit to see latest filings across all companies.")
+    list_filings_parser.add_argument("--since", help="ISO timestamp filter on acceptance time (naive = US/Eastern)")
+
+    # insider command
+    insider_parser = subparsers.add_parser("insider", help="Insider activity (Forms 3/4/5/144)")
+    insider_parser.add_argument("ticker", help="Stock ticker (e.g., MP)")
+    insider_parser.add_argument("--days", type=int, default=30, help="Lookback window in days (default: 30)")
 
     # financials command
     financials_parser = subparsers.add_parser("financials", help="Get financial statements")
@@ -290,6 +329,13 @@ def main():
         return asyncio.run(list_filings_command(
             ticker=args.ticker,
             form_type=args.form_type,
+            cache_dir=args.cache_dir,
+            since=args.since
+        ))
+    elif args.command == "insider":
+        return asyncio.run(insider_command(
+            ticker=args.ticker,
+            days=args.days,
             cache_dir=args.cache_dir
         ))
     elif args.command == "financials":

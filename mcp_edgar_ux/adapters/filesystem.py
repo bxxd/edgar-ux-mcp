@@ -29,7 +29,7 @@ class FilesystemCache(FilingRepository):
 
     def _get_path(self, ticker: str, form_type: str, filing_date: str, format: str) -> Path:
         """Get path for cached filing"""
-        ext = {"markdown": ".md", "text": ".txt", "html": ".html"}[format]
+        ext = {"markdown": ".md", "text": ".txt", "html": ".html", "xml": ".xml"}[format]
         cache_dir = self._ensure_dir(ticker, form_type)
         return cache_dir / f"{filing_date}{ext}"
 
@@ -84,7 +84,7 @@ class FilesystemCache(FilingRepository):
                         continue
 
                 for file_path in form_dir.iterdir():
-                    if file_path.is_file() and file_path.suffix in ['.md', '.txt', '.html']:
+                    if file_path.is_file() and file_path.suffix in ['.md', '.txt', '.html', '.xml']:
                         stat = file_path.stat()
                         filings.append(CachedFiling(
                             ticker=ticker_dir.name,

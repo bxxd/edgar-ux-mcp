@@ -5,7 +5,23 @@ Format handler results as Bloomberg Terminal-inspired text output.
 Used by both CLI and MCP adapters for consistent presentation.
 """
 
-from typing import Any
+from typing import Any, Optional
+
+
+def _fmt_accepted(iso: Optional[str]) -> str:
+    """'2026-06-05T20:05:28-04:00' -> '06-05 20:05' (ET, compact)"""
+    if not iso or len(iso) < 16:
+        return ""
+    return f"{iso[5:10]} {iso[11:16]}"
+
+
+def _fmt_num(value: Optional[float]) -> str:
+    """Format share/dollar numbers with thousands separators"""
+    if value is None:
+        return "-"
+    if value == int(value):
+        return f"{int(value):,}"
+    return f"{value:,.2f}"
 
 
 def format_fetch_filing(result: dict[str, Any]) -> str:
@@ -203,16 +219,17 @@ def format_list_filings(result: dict[str, Any]) -> str:
         # Use requested form_type (e.g., "CORE") instead of first filing's type
         form_type = result.get('requested_form_type', result['filings'][0]['form_type'] if result['filings'] else "ALL").upper()
 
+        since_note = f" — ACCEPTED SINCE {result['since']}" if result.get('since') else ""
         if multi_form:
             # Show FORM column when displaying multiple form types
-            lines.append(f"{form_type} FILINGS AVAILABLE (RECENT FILINGS - PAST FEW DAYS)")
+            lines.append(f"{form_type} FILINGS AVAILABLE (RECENT FILINGS - PAST FEW DAYS){since_note}")
             lines.append("─" * 120)
-            lines.append(f"{'TICKER':<10}  {'FORM':<12}  {'COMPANY':<30}  {'FILED':<10}  PATH (if cached)")
+            lines.append(f"{'TICKER':<10}  {'FORM':<12}  {'COMPANY':<30}  {'FILED':<10}  {'ACCEPTED(ET)':<12}  PATH (if cached)")
             lines.append("─" * 120)
         else:
-            lines.append(f"{form_type} FILINGS AVAILABLE (RECENT FILINGS - PAST FEW DAYS)")
+            lines.append(f"{form_type} FILINGS AVAILABLE (RECENT FILINGS - PAST FEW DAYS){since_note}")
             lines.append("─" * 100)
-            lines.append(f"{'TICKER':<10}  {'COMPANY':<30}  {'FILED':<10}  PATH (if cached)")
+            lines.append(f"{'TICKER':<10}  {'COMPANY':<30}  {'FILED':<10}  {'ACCEPTED(ET)':<12}  PATH (if cached)")
             lines.append("─" * 100)
 
         # Table rows (paginated)
@@ -245,11 +262,12 @@ def format_list_filings(result: dict[str, Any]) -> str:
 
             # Show path if cached, blank otherwise
             location = path if path else ""
+            accepted = _fmt_accepted(filing.get('acceptance_datetime')).ljust(12)
 
             if multi_form:
-                lines.append(f"{ticker}  {form}  {company}  {date}  {location}")
+                lines.append(f"{ticker}  {form}  {company}  {date}  {accepted}  {location}")
             else:
-                lines.append(f"{ticker}  {company}  {date}  {location}")
+                lines.append(f"{ticker}  {company}  {date}  {accepted}  {location}")
     else:
         # Single ticker - original format
         ticker = result['filings'][0]['ticker'].upper() if result['filings'] else "FILINGS"
@@ -264,11 +282,14 @@ def format_list_filings(result: dict[str, Any]) -> str:
             lines.append(f"{ticker} {requested_form_type} FILINGS AVAILABLE")
         lines.append("─" * 70)
 
+        if result.get('since'):
+            lines.append(f"ACCEPTED SINCE {result['since']}")
+
         # Show form type column for CORE/ALL (multiple form types)
         if multi_form:
-            lines.append(f"{'FORM':<12}  {'FILED':<10}  LOCATION (if cached)")
+            lines.append(f"{'FORM':<12}  {'FILED':<10}  {'ACCEPTED(ET)':<12}  LOCATION (if cached)")
         else:
-            lines.append(f"FILED       LOCATION (if cached)")
+            lines.append(f"{'FILED':<10}  {'ACCEPTED(ET)':<12}  LOCATION (if cached)")
         lines.append("─" * 70)
 
         # Table rows (paginated)
@@ -296,14 +317,12 @@ def format_list_filings(result: dict[str, Any]) -> str:
                             break
 
             location = path if path else ""
+            accepted = _fmt_accepted(filing.get('acceptance_datetime')).ljust(12)
 
             if multi_form:
-                lines.append(f"{form_col}  {date}  {location}")
+                lines.append(f"{form_col}  {date}  {accepted}  {location}")
             else:
-                if location:
-                    lines.append(f"{date}  {location}")
-                else:
-                    lines.append(f"{date}")
+                lines.append(f"{date}  {accepted}  {location}".rstrip())
 
     # Footer
     lines.append("")
@@ -412,6 +431,117 @@ def format_financial_statements(result: dict[str, Any]) -> str:
     # Affordances
     lines.append("─" * 70)
     lines.append(f'Try: get_financial_statements("{ticker}", statement_type="income") for specific statements')
+
+    return "\n".join(lines)
+
+
+def format_insider_activity(result: dict[str, Any]) -> str:
+    """Format insider_activity result as BBG Lite text, series-aggregated per filer.
+
+    The signal is the SERIES — sustained distribution across multiple filings
+    is grouped per filer so it can't be missed in single-filing reads.
+    """
+    if not result.get("success"):
+        return f"ERROR: {result.get('error', 'Unknown error')}"
+
+    ticker = result["ticker"]
+    days = result["days"]
+    filings = result["filings"]
+
+    lines = []
+    lines.append(f"{ticker} INSIDER ACTIVITY — LAST {days} DAYS (Forms 3/4/5/144)")
+    lines.append("─" * 100)
+
+    if not filings:
+        lines.append("No ownership filings in window.")
+        lines.append("")
+        lines.append(f'Try: insider_activity("{ticker}", days=90) for a wider window')
+        return "\n".join(lines)
+
+    # Group by filer (preserve newest-first order within each group)
+    by_filer: dict[str, list[dict]] = {}
+    for f in filings:
+        by_filer.setdefault(f["filer"], []).append(f)
+
+    # Order filers by gross transaction value (largest series first)
+    def gross_value(fs: list[dict]) -> float:
+        return sum(t["value"] or 0 for f in fs for t in f["transactions"])
+
+    for filer in sorted(by_filer, key=lambda k: gross_value(by_filer[k]), reverse=True):
+        group = by_filer[filer]
+        position = next((f["position"] for f in group if f.get("position")), None)
+
+        # Series rollup across the filer's Form 4/5 transactions (144s are notices, not executions)
+        sold_sh = sold_val = bought_sh = bought_val = 0.0
+        n_txn_filings = 0
+        proposed_sh = 0.0
+        n_144 = 0
+        plan_flags = set()
+        for f in group:
+            base_form = f["form_type"].replace("/A", "")
+            if base_form == "144":
+                n_144 += 1
+                proposed_sh += sum(t["shares"] or 0 for t in f["transactions"])
+                continue
+            if f["transactions"]:
+                n_txn_filings += 1
+            if f["aff10b5One"] is not None:
+                plan_flags.add(f["aff10b5One"])
+            for t in f["transactions"]:
+                if t["code"] == "S":
+                    sold_sh += t["shares"] or 0
+                    sold_val += t["value"] or 0
+                elif t["code"] == "P":
+                    bought_sh += t["shares"] or 0
+                    bought_val += t["value"] or 0
+
+        lines.append("")
+        header = filer if not position else f"{filer} ({position})"
+        lines.append(header.upper())
+
+        series_bits = []
+        if sold_sh:
+            series_bits.append(f"SOLD {_fmt_num(sold_sh)} sh ≈ ${_fmt_num(sold_val)} across {n_txn_filings} filing(s)")
+        if bought_sh:
+            series_bits.append(f"BOUGHT {_fmt_num(bought_sh)} sh ≈ ${_fmt_num(bought_val)}")
+        if n_144:
+            series_bits.append(f"{n_144} Form 144 notice(s) for {_fmt_num(proposed_sh)} sh proposed")
+        if plan_flags == {True}:
+            plan_str = "10b5-1 PLAN (all filings)"
+        elif plan_flags == {False}:
+            plan_str = "DISCRETIONARY (no 10b5-1 plan)"
+        elif plan_flags:
+            plan_str = "MIXED 10b5-1 status"
+        else:
+            plan_str = None
+        if plan_str:
+            series_bits.append(plan_str)
+        if series_bits:
+            lines.append(f"  SERIES: {' | '.join(series_bits)}")
+
+        for f in group:
+            accepted = _fmt_accepted(f.get("acceptance_datetime"))
+            flag = ""
+            if f["aff10b5One"] is True:
+                flag = "  [10b5-1]"
+            elif f["aff10b5One"] is False:
+                flag = "  [discretionary]"
+            lines.append(f"  {f['form_type']:<5} filed {f['filing_date']}  acc {accepted}{flag}  {f['accession_number']}")
+            for t in f["transactions"]:
+                px = f" @ {_fmt_num(t['price'])}" if t["price"] is not None else ""
+                val = f"  = ${_fmt_num(t['value'])}" if t["value"] else ""
+                post = f"  post {_fmt_num(t['shares_owned_after'])}" if t["shares_owned_after"] is not None else ""
+                lines.append(f"        {t['date']}  {t['code']:<4} {t['description'][:28]:<28} {_fmt_num(t['shares']):>12}{px}{val}{post}")
+            for fn_id, fn_text in f["footnotes"].items():
+                text = fn_text if len(fn_text) <= 110 else fn_text[:107] + "..."
+                lines.append(f"        {fn_id}: {text}")
+            if f.get("remarks"):
+                lines.append(f"        Remarks: {f['remarks'][:110]}")
+
+    lines.append("")
+    lines.append(f"{len(filings)} filing(s), {len(by_filer)} filer(s)")
+    lines.append("")
+    lines.append(f'Try: fetch_filing("{ticker}", "4", format="xml") for raw XML | insider_activity("{ticker}", days=90)')
 
     return "\n".join(lines)
 

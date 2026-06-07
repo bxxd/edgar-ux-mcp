@@ -25,7 +25,8 @@ from .formatters import (
     format_fetch_filing,
     format_search_filing,
     format_list_filings,
-    format_financial_statements
+    format_financial_statements,
+    format_insider_activity
 )
 
 # Configure logging to stderr (stdout is for MCP protocol)
@@ -73,7 +74,8 @@ async def list_tools() -> list[Tool]:
         Tool(**TOOL_SCHEMAS["fetch_filing"]),
         Tool(**TOOL_SCHEMAS["search_filing"]),
         Tool(**TOOL_SCHEMAS["list_filings"]),
-        Tool(**TOOL_SCHEMAS["get_financial_statements"])
+        Tool(**TOOL_SCHEMAS["get_financial_statements"]),
+        Tool(**TOOL_SCHEMAS["insider_activity"])
     ]
 
 
@@ -93,7 +95,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         "fetch_filing": format_fetch_filing,
         "search_filing": format_search_filing,
         "list_filings": format_list_filings,
-        "get_financial_statements": format_financial_statements
+        "get_financial_statements": format_financial_statements,
+        "insider_activity": format_insider_activity
     }
 
     formatter = formatters.get(name)
@@ -136,7 +139,14 @@ async def _dispatch_tool(name: str, arguments: dict[str, Any]) -> Any:
             ticker=arguments.get("ticker"),
             form_type=arguments["form_type"],
             start=arguments.get("start", 0),
-            max=arguments.get("max", 15)
+            max=arguments.get("max", 15),
+            since=arguments.get("since")
+        )
+
+    elif name == "insider_activity":
+        return await handlers.insider_activity(
+            ticker=arguments["ticker"],
+            days=arguments.get("days", 30)
         )
 
     elif name == "get_financial_statements":
