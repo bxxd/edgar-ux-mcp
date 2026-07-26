@@ -141,8 +141,12 @@ CORE_FORM_TYPES = {
     '20-F', '20-F/A', '6-K', '6-K/A',
     # Current reports (material events)
     '8-K', '8-K/A',
-    # Registration statements (IPOs, secondaries, M&A)
-    'S-1', 'S-1/A', 'S-3', 'S-3/A', 'S-4', 'S-4/A',
+    # Registration statements (IPOs, secondaries, M&A).
+    # S-3ASR is the automatic shelf a WKSI files — same economic event as an
+    # S-3, but a DISTINCT form type that form_type='S-3' does not match, so it
+    # has to be listed explicitly or it is invisible to CORE. (VKTX's
+    # 2023-07-26 S-3ASR was missing from both CORE and an 'S-3' query.)
+    'S-1', 'S-1/A', 'S-3', 'S-3/A', 'S-3ASR', 'S-3ASR/A', 'S-4', 'S-4/A',
     # Note: 13D/13G excluded - too noisy (passive holder filings)
     # Use ALL with ticker or specific form type to find ownership filings
 }
