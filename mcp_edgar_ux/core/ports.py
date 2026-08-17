@@ -8,14 +8,29 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Optional
 
-from .domain import Filing, CachedFiling, FilingContent, InsiderFiling, SearchMatch
+from .domain import (
+    Filing,
+    CachedFiling,
+    FilingContent,
+    FilingDocument,
+    InsiderFiling,
+    SearchMatch,
+    ThirteenFReport,
+)
 
 
 class FilingRepository(ABC):
     """Port for filing cache storage"""
 
     @abstractmethod
-    def get(self, ticker: str, form_type: str, filing_date: str, format: str) -> Optional[Path]:
+    def get(
+        self,
+        ticker: str,
+        form_type: str,
+        filing_date: str,
+        format: str,
+        document: Optional[str] = None
+    ) -> Optional[Path]:
         """Get path to cached filing if it exists"""
         pass
 
@@ -52,8 +67,19 @@ class FilingFetcher(ABC):
         pass
 
     @abstractmethod
-    def fetch(self, filing: Filing, format: str = "text", include_exhibits: bool = True) -> str:
-        """Download filing content from SEC"""
+    def fetch(
+        self,
+        filing: Filing,
+        format: str = "text",
+        include_exhibits: bool = True,
+        document: Optional[str] = None,
+    ) -> str:
+        """Download filing content from SEC.
+
+        document: fetch this named document from the accession instead of the
+        primary one (sequence number or filename). Required to reach e.g. a
+        13F information table, whose primary document is only a cover page.
+        """
         pass
 
     @abstractmethod
@@ -67,6 +93,21 @@ class FilingFetcher(ABC):
     @abstractmethod
     def get_insider_activity(self, ticker: str, days: int) -> list[InsiderFiling]:
         """Fetch and parse ownership filings (Forms 3/4/5/144) for the last N days"""
+        pass
+
+    @abstractmethod
+    def list_documents(self, filing: Filing) -> list[FilingDocument]:
+        """List every document in the filing's accession (not just the primary)"""
+        pass
+
+    @abstractmethod
+    def omitted_documents(self, filing: Filing, include_exhibits: bool) -> list[FilingDocument]:
+        """Substantive documents in the accession that a fetch() would NOT return"""
+        pass
+
+    @abstractmethod
+    def get_thirteenf(self, filing: Filing) -> ThirteenFReport:
+        """Parse a 13F-HR into cover-page totals plus the information table"""
         pass
 
 

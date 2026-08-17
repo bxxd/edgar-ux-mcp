@@ -10,18 +10,23 @@ from .domain import (
     Filing,
     CachedFiling,
     FilingContent,
+    FilingDocument,
+    Holding,
     InsiderFiling,
     InsiderTransaction,
     SearchMatch,
-    SearchResult
+    SearchResult,
+    ThirteenFReport
 )
 from .ports import FilingRepository, FilingFetcher, FilingSearcher
 from .services import (
     FetchFilingService,
     ListFilingsService,
+    ListDocumentsService,
     SearchFilingService,
     FinancialStatementsService,
-    InsiderActivityService
+    InsiderActivityService,
+    ThirteenFService
 )
 
 __all__ = [
@@ -29,10 +34,13 @@ __all__ = [
     "Filing",
     "CachedFiling",
     "FilingContent",
+    "FilingDocument",
+    "Holding",
     "InsiderFiling",
     "InsiderTransaction",
     "SearchMatch",
     "SearchResult",
+    "ThirteenFReport",
     # Ports
     "FilingRepository",
     "FilingFetcher",
@@ -40,7 +48,9 @@ __all__ = [
     # Services
     "FetchFilingService",
     "ListFilingsService",
+    "ListDocumentsService",
     "SearchFilingService",
     "FinancialStatementsService",
-    "InsiderActivityService"
+    "InsiderActivityService",
+    "ThirteenFService"
 ]

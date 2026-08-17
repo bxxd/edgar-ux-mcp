@@ -9,9 +9,11 @@ from .adapters import FilesystemCache, EdgarAdapter, GrepSearcher
 from .core import (
     FetchFilingService,
     ListFilingsService,
+    ListDocumentsService,
     SearchFilingService,
     FinancialStatementsService,
-    InsiderActivityService
+    InsiderActivityService,
+    ThirteenFService
 )
 
 
@@ -43,6 +45,10 @@ class Container:
             fetch_service=self.fetch_filing
         )
 
+        self.list_documents = ListDocumentsService(fetcher=self.fetcher)
+
         self.get_financials = FinancialStatementsService()
 
         self.insider_activity = InsiderActivityService(fetcher=self.fetcher)
+
+        self.thirteenf = ThirteenFService(fetcher=self.fetcher)

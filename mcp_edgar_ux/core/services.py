@@ -4,14 +4,25 @@ Application Services - Use cases that orchestrate domain logic
 These are the entry points to the core. They coordinate between
 domain models and ports, but contain no infrastructure concerns.
 """
+import logging
 from datetime import datetime
 from typing import Optional, Literal
 from zoneinfo import ZoneInfo
 
 from edgar import Company
 
-from .domain import Filing, FilingContent, InsiderFiling, SearchResult, CachedFiling
+from .domain import (
+    Filing,
+    FilingContent,
+    FilingDocument,
+    InsiderFiling,
+    SearchResult,
+    CachedFiling,
+    ThirteenFReport,
+)
 from .ports import FilingRepository, FilingFetcher, FilingSearcher
+
+logger = logging.getLogger(__name__)
 
 EASTERN = ZoneInfo("America/New_York")
 
@@ -49,25 +60,32 @@ class FetchFilingService:
         format: str = "text",
         include_exhibits: bool = True,
         preview_lines: int = 50,
-        force_refetch: bool = False
+        force_refetch: bool = False,
+        document: Optional[str] = None
     ) -> FilingContent:
         """
         Fetch filing and cache it.
 
         Returns FilingContent with path and metadata (content not loaded into memory).
+
+        document: fetch a specific document from the accession instead of the
+        primary one. A submission is a bundle; for some forms the primary
+        document is only a cover page.
         """
         # Get filing metadata
         filing = self.fetcher.get_latest(ticker, form_type, date)
 
         # Check if already cached (skip if force_refetch)
-        cached_path = self.repository.get(ticker, form_type, filing.filing_date, format) if not force_refetch else None
+        cached_path = self.repository.get(
+            ticker, form_type, filing.filing_date, format, document
+        ) if not force_refetch else None
 
         if cached_path:
             # Already cached — get metadata without reading content into memory
             total_lines = self.searcher.count_lines(cached_path)
         else:
             # Download from SEC
-            content = self.fetcher.fetch(filing, format, include_exhibits)
+            content = self.fetcher.fetch(filing, format, include_exhibits, document)
 
             # Save to cache
             filing_content = FilingContent(
@@ -76,11 +94,17 @@ class FetchFilingService:
                 format=format,
                 path=None,  # Will be set by repository
                 size_bytes=len(content.encode('utf-8')),
-                total_lines=content.count('\n') + 1
+                total_lines=content.count('\n') + 1,
+                document=document
             )
             cached_path = self.repository.save(filing_content)
             total_lines = filing_content.total_lines
             del content  # Release filing text (can be 10-160MB)
+
+        # A fetch that silently returns part of a submission is the failure mode
+        # this guards: a 13F cover page carries an authoritative-looking total
+        # with not one issuer name behind it. Always report what was left behind.
+        omitted = [] if document else self._omitted(filing, include_exhibits)
 
         # Return metadata only — caller uses path for content access
         return FilingContent(
@@ -89,8 +113,24 @@ class FetchFilingService:
             format=format,
             path=cached_path,
             size_bytes=cached_path.stat().st_size,
-            total_lines=total_lines
+            total_lines=total_lines,
+            document=document,
+            omitted_documents=omitted
         )
+
+    def _omitted(self, filing, include_exhibits: bool) -> list:
+        """Documents in the accession this fetch did not return.
+
+        Never fatal: a filing you already have in hand beats an error about
+        the index, so a failure here degrades to 'nothing known omitted'.
+        """
+        try:
+            return self.fetcher.omitted_documents(filing, include_exhibits)
+        except Exception as e:  # noqa: BLE001 - advisory only
+            logger.warning(
+                f"Could not enumerate documents for {filing.accession_number}: {e}"
+            )
+            return []
 
 
 class ListFilingsService:
@@ -205,6 +245,47 @@ class SearchFilingService:
             total_matches=total_count,
             file_path=cached_path
         )
+
+
+class ListDocumentsService:
+    """Use case: List every document inside a filing's accession.
+
+    The missing verb: fetch_filing returns the submission's PRIMARY document,
+    and for some forms that is a cover page. This says what else is in there.
+    """
+
+    def __init__(self, fetcher: FilingFetcher):
+        self.fetcher = fetcher
+
+    def execute(
+        self,
+        ticker: str,
+        form_type: str,
+        date: Optional[str] = None
+    ) -> tuple[Filing, list[FilingDocument]]:
+        filing = self.fetcher.get_latest(ticker, form_type, date)
+        return filing, self.fetcher.list_documents(filing)
+
+
+class ThirteenFService:
+    """Use case: 13F holdings — the information table, not just the cover page.
+
+    13F is a HOLDER-side form: the filer is an institutional manager addressed
+    by CIK, and the positions live in the information table document. Reading
+    only the primary document yields a total with no issuers behind it.
+    """
+
+    def __init__(self, fetcher: FilingFetcher):
+        self.fetcher = fetcher
+
+    def execute(
+        self,
+        ticker: str,
+        date: Optional[str] = None,
+        form_type: str = "13F-HR"
+    ) -> ThirteenFReport:
+        filing = self.fetcher.get_latest(ticker, form_type, date)
+        return self.fetcher.get_thirteenf(filing)
 
 
 class InsiderActivityService:
