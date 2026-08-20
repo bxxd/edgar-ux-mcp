@@ -175,6 +175,10 @@ an 8-K's 44 extras are all silent; a 13F's information table always fires.
   `tableValueTotal`) and says so explicitly when they disagree. Both totals are
   always printed together — a cover total with no table behind it is the exact
   bug this tool exists to prevent
+- **Values are whole dollars.** Form 13F reported in THOUSANDS until the SEC
+  amendment effective 2023-01-03 (Q4-2022 periods onward); earlier filings are
+  rescaled and the output says so. Reconciliation cannot detect the unit,
+  because the cover total carries the same one as the table it checks
 
 **3. `search_filing(ticker, form_type, pattern, context_lines=2)` - CONTENT SEARCH**
 - Fuzzy search using `ugrep` (fuzzy=1, tolerates 1-char differences)
@@ -387,7 +391,7 @@ CACHE_DIR=/tmp/sec-filings-test ./cli fetch TSLA 10-K
 - `tests/test_cache_addressing.py` — drives the real `FetchFilingService`
   against the real `FilesystemCache` with a fake SEC. Covers two filings on one
   date, cache hits for a CIK-addressed filer, and disk accounting ✅
-- 37 tests, all passing, **none of which touch the network**. There is still no
+- 40 tests, all passing, **none of which touch the network**. There is still no
   coverage of a real SEC response, and no CI — nothing runs the suite on push —
   and `make lint` cannot run because mypy and ruff are absent from the dev
   dependencies.
