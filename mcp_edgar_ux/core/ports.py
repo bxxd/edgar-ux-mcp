@@ -28,6 +28,7 @@ class FilingRepository(ABC):
         ticker: str,
         form_type: str,
         filing_date: str,
+        accession_number: str,
         format: str,
         document: Optional[str] = None
     ) -> Optional[Path]:
@@ -50,7 +51,14 @@ class FilingRepository(ABC):
         pass
 
     @abstractmethod
-    def exists(self, ticker: str, form_type: str, filing_date: str, format: str) -> bool:
+    def exists(
+        self,
+        ticker: str,
+        form_type: str,
+        filing_date: str,
+        accession_number: str,
+        format: str
+    ) -> bool:
         """Check if filing is cached"""
         pass
 

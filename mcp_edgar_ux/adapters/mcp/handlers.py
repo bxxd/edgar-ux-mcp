@@ -36,7 +36,7 @@ class MCPHandlers:
             # Normalize format names: cache uses extensions (txt, md, html, xml), API uses full names
             format_map = {"text": "txt", "markdown": "md", "html": "html", "xml": "xml"}
             normalized_format = format_map.get(format, format)
-            cached_dates = {(c.filing_date, c.format) for c in cached_filings}
+            cached_accessions = {(c.accession_number, c.format) for c in cached_filings}
 
             # Fetch the filing (may use cache or download)
             filing_content = await asyncio.to_thread(
@@ -54,7 +54,8 @@ class MCPHandlers:
             # Check if this filing was already cached before we called the service
             was_cached = (
                 False if document
-                else (filing_content.filing.filing_date, normalized_format) in cached_dates
+                else (filing_content.filing.accession_number, normalized_format)
+                in cached_accessions
             )
 
             # No preview - agent should use Read tool on the returned path
@@ -272,10 +273,12 @@ class MCPHandlers:
                 since=since
             )
 
-            # Build map of cached filings by (ticker, form_type, filing_date)
+            # Keyed on the accession number: a date is shared by every filing
+            # a company made that day, so keying on it hands each of them the
+            # same path and reports all of them cached.
             cached_map = {}
             for c in cached:
-                key = (c.ticker, c.form_type, c.filing_date)
+                key = (c.ticker, c.form_type, c.accession_number)
                 if key not in cached_map:
                     cached_map[key] = {}
                 cached_map[key][c.format] = {
@@ -286,7 +289,7 @@ class MCPHandlers:
             # Merge available with cached info
             filings = []
             for filing in available:
-                key = (filing.ticker, filing.form_type.upper(), filing.filing_date)
+                key = (filing.ticker, filing.form_type.upper(), filing.accession_number)
                 cached_info = cached_map.get(key, {})
                 filings.append({
                     "ticker": filing.ticker,
