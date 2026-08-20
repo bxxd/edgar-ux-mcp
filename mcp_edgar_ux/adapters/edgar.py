@@ -141,8 +141,12 @@ CORE_FORM_TYPES = {
     '20-F', '20-F/A', '6-K', '6-K/A',
     # Current reports (material events)
     '8-K', '8-K/A',
-    # Registration statements (IPOs, secondaries, M&A)
-    'S-1', 'S-1/A', 'S-3', 'S-3/A', 'S-4', 'S-4/A',
+    # Registration statements (IPOs, secondaries, M&A).
+    # S-3ASR is the automatic shelf a WKSI files — same economic event as an
+    # S-3, but a DISTINCT form type that form_type='S-3' does not match, so it
+    # has to be listed explicitly or it is invisible to CORE. (VKTX's
+    # 2023-07-26 S-3ASR was missing from both CORE and an 'S-3' query.)
+    'S-1', 'S-1/A', 'S-3', 'S-3/A', 'S-3ASR', 'S-3ASR/A', 'S-4', 'S-4/A',
     # Note: 13D/13G excluded - too noisy (passive holder filings)
     # Use ALL with ticker or specific form type to find ownership filings
 }
@@ -267,17 +271,25 @@ class EdgarAdapter(FilingFetcher):
                         if form_type == 'CORE':
                             result = [f for f in result if f.form_type in CORE_FORM_TYPES]
 
-                        # Sort by date descending (most recent first)
-                        result.sort(key=lambda x: x.filing_date, reverse=True)
+                        # Sort by date descending, then acceptance time, so the
+                        # now-possible multiple filings per date have a stable,
+                        # meaningful order instead of an arbitrary one.
+                        result.sort(
+                            key=lambda x: (x.filing_date, x.acceptance_datetime or ''),
+                            reverse=True,
+                        )
 
-                        # Deduplicate by (ticker, form_type, filing_date) - keep first for each
+                        # Deduplicate by accession number, same as the per-ticker
+                        # path. The old (ticker, form_type, filing_date) key was
+                        # less destructive than keying on date alone, but still
+                        # dropped a second same-form filing on the same day —
+                        # e.g. two 8-Ks from one company, which is routine.
                         seen = set()
                         deduplicated = []
                         for filing in result:
-                            key = (filing.ticker, filing.form_type, filing.filing_date)
-                            if key not in seen:
+                            if filing.accession_number not in seen:
                                 deduplicated.append(filing)
-                                seen.add(key)
+                                seen.add(filing.accession_number)
 
                         # Cache the processed domain models
                         _current_filings_cache.set(cache_key, deduplicated)
@@ -390,17 +402,33 @@ class EdgarAdapter(FilingFetcher):
         if form_type == 'CORE':
             result = [f for f in result if f.form_type in CORE_FORM_TYPES]
 
-        # Sort by date descending (most recent first)
-        result.sort(key=lambda x: x.filing_date, reverse=True)
+        # Sort by date descending, then acceptance time (see the no-ticker path):
+        # multiple filings per date are now preserved, so intra-date order matters.
+        result.sort(
+            key=lambda x: (x.filing_date, x.acceptance_datetime or ''),
+            reverse=True,
+        )
 
-        # Deduplicate by filing_date - keep first (most recent accession) for each date
-        # This handles cases where multiple filings exist for same date (amendments, etc.)
-        seen_dates = set()
+        # Deduplicate by accession number — the SEC's unique id for a filing.
+        #
+        # This used to key on filing_date alone, which silently kept only ONE
+        # filing per date no matter how many distinct ones a company submitted.
+        # Companies routinely file several on one day (VKTX 2026-02-11: 10-K +
+        # an 8-K carrying results; 2026-04-30: 10-Q + a SCHEDULE 13G), so the
+        # survivor was whichever sorted first and the rest vanished with no
+        # marker. That made list_filings unusable for establishing that
+        # something was NOT filed, and it hit every form_type — CORE included,
+        # whenever the colliding filings were both core forms.
+        #
+        # Accession is the correct key: distinct filings always differ, and a
+        # genuine duplicate (the same filing reached via both the historical and
+        # the current feed) still collapses.
+        seen_accession_numbers = set()
         deduplicated = []
         for filing in result:
-            if filing.filing_date not in seen_dates:
+            if filing.accession_number not in seen_accession_numbers:
                 deduplicated.append(filing)
-                seen_dates.add(filing.filing_date)
+                seen_accession_numbers.add(filing.accession_number)
 
         return deduplicated
 

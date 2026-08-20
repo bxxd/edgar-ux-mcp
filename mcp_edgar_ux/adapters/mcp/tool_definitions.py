@@ -100,7 +100,8 @@ search_filing("LNG", "10-Q", "Corpus|Stage 3") → OR patterns with |
         "name": "list_filings",
         "description": """List available SEC filings with cached status. Newest first.
 
-RECOMMENDED: Use 'CORE' for essential filings (10-K, 10-Q, 20-F, 8-K, S-1/S-3/S-4, 13D/13G).
+RECOMMENDED: Use 'CORE' for essential filings — 10-K, 10-Q, 20-F, 6-K, 8-K,
+S-1/S-3/S-3ASR/S-4 (and their /A amendments).
 
 list_filings("TSLA", "CORE") → TSLA's essential filings (recommended)
 list_filings("TSLA", "10-K") → TSLA's 10-Ks only
@@ -110,8 +111,15 @@ list_filings("TSLA", "10-K", start=15) → pagination
 list_filings(form_type="CORE", since="2026-06-05T16:15:00") → accepted at/after timestamp (ET)
 
 Each filing shows acceptance datetime (ET) — use 'since' to diff what landed
-after your last sweep. NOTE: CORE excludes ownership forms (3/4/5/144) — use
-insider_activity(ticker) for those.
+after your last sweep.
+
+CORE EXCLUDES, by design — do not use CORE to conclude something was not filed:
+  - ownership forms (3/4/5/144) → use insider_activity(ticker)
+  - 13D/13G ownership stakes    → form_type="ALL" or the specific form
+  - proxy material (DEF 14A / DEFA14A / DFAN14A / PRE 14A) → form_type="ALL".
+    For any holding with a live proxy contest, activist stake, merger vote or
+    annual meeting, sweep that ticker with "ALL" — a contested vote is where
+    the highest-signal filing of the week lives, and CORE will not show it.
 """,
         "inputSchema": {
             "type": "object",
@@ -122,7 +130,7 @@ insider_activity(ticker) for those.
                 },
                 "form_type": {
                     "type": "string",
-                    "description": "Form type: 'CORE' (recommended - 10-K, 10-Q, 20-F, 8-K, S-*, 13D/G), 'ALL', or specific (10-K, 10-Q, etc.)"
+                    "description": "Form type: 'CORE' (recommended - 10-K, 10-Q, 20-F, 6-K, 8-K, S-1/S-3/S-3ASR/S-4; excludes ownership, 13D/G and proxy forms), 'ALL', or specific (10-K, 10-Q, DEF 14A, etc.)"
                 },
                 "start": {
                     "type": "integer",
