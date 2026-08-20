@@ -195,3 +195,35 @@ class TestListAllStillReportsFilingDates:
 
         assert cache.get_disk_usage() == expected
         assert expected > 0
+
+
+class TestCachedFlagIsHonest:
+    """The tool must not report a cache hit as a fresh download.
+
+    A CIK filer is stored under CIK##########; the handler probed the cache
+    with the caller's raw digits, found nothing, and labelled every repeat
+    fetch 'downloaded' while quietly serving it from disk.
+    """
+
+    @pytest.mark.asyncio
+    async def test_repeat_fetch_of_a_cik_filer_reports_cached(self, tmp_path):
+        from mcp_edgar_ux.adapters.mcp.handlers import MCPHandlers
+
+        BODIES[HARVARD.accession_number] = "HARVARD 13F COVER PAGE"
+        svc, sec = _service(tmp_path, [HARVARD], lambda t, f, d=None: HARVARD)
+
+        class FakeContainer:
+            pass
+
+        container = FakeContainer()
+        container.cache = svc.repository
+        container.fetch_filing = svc
+        handlers = MCPHandlers.__new__(MCPHandlers)
+        handlers.container = container
+
+        first = await handlers.fetch_filing(ticker="1082621", form_type="13F-HR")
+        second = await handlers.fetch_filing(ticker="1082621", form_type="13F-HR")
+
+        assert first["cached"] is False
+        assert second["cached"] is True
+        assert sec.downloads == 1
