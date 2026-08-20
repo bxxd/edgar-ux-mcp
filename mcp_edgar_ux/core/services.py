@@ -76,8 +76,17 @@ class FetchFilingService:
         filing = self.fetcher.get_latest(ticker, form_type, date)
 
         # Check if already cached (skip if force_refetch)
+        # Address the resolved filing, never the caller's raw arguments: an
+        # identifier like "1082621" normalizes to the label "CIK0001082621"
+        # that save() writes under, and the date alone no longer identifies
+        # one filing.
         cached_path = self.repository.get(
-            ticker, form_type, filing.filing_date, format, document
+            filing.ticker,
+            form_type,
+            filing.filing_date,
+            filing.accession_number,
+            format,
+            document,
         ) if not force_refetch else None
 
         if cached_path:
@@ -220,7 +229,13 @@ class SearchFilingService:
         filing = self.fetcher.get_latest(ticker, form_type, date)
 
         # Ensure filing is cached
-        cached_path = self.repository.get(ticker, form_type, filing.filing_date, format)
+        cached_path = self.repository.get(
+            filing.ticker,
+            form_type,
+            filing.filing_date,
+            filing.accession_number,
+            format,
+        )
 
         if not cached_path:
             # Fetch and cache it first

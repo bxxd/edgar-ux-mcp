@@ -132,16 +132,20 @@ class TestThirteenFReconciliation:
 class TestDocumentCachePaths:
     """Named documents must not be mistaken for filings by the cache index."""
 
-    def test_primary_document_keeps_the_flat_layout(self, tmp_path):
+    ACC = "0001045810-26-000065"
+
+    def test_primary_document_is_addressed_by_date_and_accession(self, tmp_path):
         cache = FilesystemCache(tmp_path)
-        path = cache._get_path("NVDA", "13F-HR", "2026-08-14", "text")
-        assert path.name == "2026-08-14.txt"
+        path = cache._get_path("NVDA", "13F-HR", "2026-08-14", self.ACC, "text")
+        assert path.name == f"2026-08-14-{self.ACC}.txt"
 
     def test_named_document_goes_under_an_accession_directory(self, tmp_path):
         cache = FilesystemCache(tmp_path)
-        path = cache._get_path("NVDA", "13F-HR", "2026-08-14", "xml", "56904.xml")
+        path = cache._get_path(
+            "NVDA", "13F-HR", "2026-08-14", self.ACC, "xml", "56904.xml"
+        )
         assert path.name == "56904.xml"
-        assert path.parent.name == "2026-08-14"
+        assert path.parent.name == f"2026-08-14-{self.ACC}"
 
     def test_cached_documents_do_not_appear_as_filings(self, tmp_path):
         cache = FilesystemCache(tmp_path)
@@ -160,7 +164,9 @@ class TestDocumentCachePaths:
 
     def test_document_path_traversal_is_stripped(self, tmp_path):
         cache = FilesystemCache(tmp_path)
-        path = cache._get_path("NVDA", "13F-HR", "2026-08-14", "xml", "../../../etc/passwd")
+        path = cache._get_path(
+            "NVDA", "13F-HR", "2026-08-14", self.ACC, "xml", "../../../etc/passwd"
+        )
         assert path.name == "passwd"
         assert tmp_path in path.parents
 

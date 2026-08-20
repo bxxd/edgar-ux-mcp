@@ -32,6 +32,7 @@ class TestDomainModels:
             ticker="TSLA",
             form_type="10-K",
             filing_date="2024-01-30",
+            accession_number="0001318605-24-000009",
             path=Path("/tmp/test.txt"),
             size_bytes=1000,
             format="text"

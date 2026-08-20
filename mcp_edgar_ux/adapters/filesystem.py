@@ -21,44 +21,61 @@ class FilesystemCache(FilingRepository):
         """Sanitize form type for use as directory name (replace / and space with _)"""
         return form_type.upper().replace('/', '_').replace(' ', '_')
 
-    def _ensure_dir(self, ticker: str, form_type: str) -> Path:
-        """Ensure cache directory exists for ticker/form"""
-        path = self.cache_dir / ticker.upper() / self._sanitize_form_type(form_type)
-        path.mkdir(parents=True, exist_ok=True)
-        return path
+    def _form_dir(self, ticker: str, form_type: str) -> Path:
+        """Directory holding one ticker's filings of one form type."""
+        return self.cache_dir / ticker.upper() / self._sanitize_form_type(form_type)
+
+    @staticmethod
+    def _stem(filing_date: str, accession_number: str) -> str:
+        """Filename stem: date first so the directory sorts chronologically.
+
+        The accession number is what makes it unique. A company files more than
+        once a day routinely, so the date alone addresses two filings at once.
+        """
+        return f"{filing_date}-{accession_number}"
+
+    @staticmethod
+    def _split_stem(stem: str) -> tuple[str, str]:
+        """Inverse of _stem: (filing_date, accession_number)."""
+        return stem[:10], stem[11:]
 
     def _get_path(
         self,
         ticker: str,
         form_type: str,
         filing_date: str,
+        accession_number: str,
         format: str,
         document: Optional[str] = None
     ) -> Path:
         """Get path for cached filing.
 
-        Primary documents keep the flat layout ({DATE}.{ext}). Named documents
-        from an accession go one level down ({DATE}/{document}) so list_all —
-        which reads a filename stem as the filing date — never sees them.
+        Primary documents are {DATE}-{ACCESSION}.{ext}. Named documents from an
+        accession go one level down ({DATE}-{ACCESSION}/{document}) so list_all,
+        which reads a filename stem, never mistakes one for a filing.
+
+        Pure — creates nothing. Only save() writes.
         """
-        cache_dir = self._ensure_dir(ticker, form_type)
+        form_dir = self._form_dir(ticker, form_type)
+        stem = self._stem(filing_date, accession_number)
         if document:
-            accession_dir = cache_dir / filing_date
-            accession_dir.mkdir(parents=True, exist_ok=True)
-            return accession_dir / Path(document).name
+            return form_dir / stem / Path(document).name
         ext = {"markdown": ".md", "text": ".txt", "html": ".html", "xml": ".xml"}[format]
-        return cache_dir / f"{filing_date}{ext}"
+        return form_dir / f"{stem}{ext}"
 
     def get(
         self,
         ticker: str,
         form_type: str,
         filing_date: str,
+        accession_number: str,
         format: str,
         document: Optional[str] = None
     ) -> Optional[Path]:
         """Get path to cached filing if it exists"""
-        path = self._get_path(ticker, form_type, filing_date, format, document)
+        path = self._get_path(
+            ticker, form_type, filing_date, accession_number, format, document
+        )
         return path if path.exists() else None
 
     def save(self, content: FilingContent) -> Path:
@@ -68,9 +85,11 @@ class FilesystemCache(FilingRepository):
             filing.ticker,
             filing.form_type,
             filing.filing_date,
+            filing.accession_number,
             content.format,
             content.document
         )
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content.content, encoding='utf-8')
         return path
 
@@ -110,10 +129,12 @@ class FilesystemCache(FilingRepository):
                 for file_path in form_dir.iterdir():
                     if file_path.is_file() and file_path.suffix in ['.md', '.txt', '.html', '.xml']:
                         stat = file_path.stat()
+                        filing_date, accession_number = self._split_stem(file_path.stem)
                         filings.append(CachedFiling(
                             ticker=ticker_dir.name,
                             form_type=dir_form_type,  # Use unsanitized form type (e.g., "10-K/A" not "10-K_A")
-                            filing_date=file_path.stem,
+                            filing_date=filing_date,
+                            accession_number=accession_number,
                             path=file_path,
                             size_bytes=stat.st_size,
                             format=file_path.suffix[1:]
@@ -135,12 +156,23 @@ class FilesystemCache(FilingRepository):
             for form_dir in ticker_dir.iterdir():
                 if not form_dir.is_dir():
                     continue
-                for file_path in form_dir.iterdir():
+                # rglob, not iterdir: named documents live one level down under
+                # {DATE}-{ACCESSION}/ and are exactly what this needs to count.
+                for file_path in form_dir.rglob('*'):
                     if file_path.is_file():
                         total += file_path.stat().st_size
         return total
 
-    def exists(self, ticker: str, form_type: str, filing_date: str, format: str) -> bool:
+    def exists(
+        self,
+        ticker: str,
+        form_type: str,
+        filing_date: str,
+        accession_number: str,
+        format: str
+    ) -> bool:
         """Check if filing is cached"""
-        path = self._get_path(ticker, form_type, filing_date, format)
+        path = self._get_path(
+            ticker, form_type, filing_date, accession_number, format
+        )
         return path.exists()

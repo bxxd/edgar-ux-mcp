@@ -115,6 +115,7 @@ class CachedFiling:
     ticker: str
     form_type: str
     filing_date: str
+    accession_number: str
     path: Path
     size_bytes: int
     format: str  # "text", "markdown", or "html"
