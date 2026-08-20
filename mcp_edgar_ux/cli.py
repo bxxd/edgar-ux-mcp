@@ -15,6 +15,10 @@ Usage:
   ./cli financials TSLA --type income     # Get income statement only
   ./cli insider MP                        # Insider activity (Forms 3/4/5/144), last 30 days
   ./cli insider MP --days 90              # Wider window
+  ./cli documents NVDA 13F-HR             # List every document in the accession
+  ./cli fetch NVDA 13F-HR --document 2    # Fetch a named doc from the accession
+  ./cli holdings 1082621                  # 13F holdings by CIK (filer has no ticker)
+  ./cli holdings NVDA --max 10            # Top 10 positions
 
 Fast iteration: Uses hexagonal core directly (no MCP layer)
 """
@@ -32,8 +36,10 @@ from .formatters import (
     format_fetch_filing,
     format_search_filing,
     format_list_filings,
+    format_list_documents,
     format_financial_statements,
     format_insider_activity,
+    format_thirteenf_holdings,
 )
 
 
@@ -77,6 +83,7 @@ async def fetch_command(
     format_type: str,
     preview_lines: int,
     cache_dir: str,
+    document: str | None = None,
 ) -> int:
     """Fetch SEC filing"""
     try:
@@ -90,7 +97,8 @@ async def fetch_command(
             form_type=form_type,
             date=date,
             format=format_type,
-            preview_lines=preview_lines
+            preview_lines=preview_lines,
+            document=document
         )
 
         # Use BBG Lite formatter
@@ -237,6 +245,49 @@ async def insider_command(
         return 1
 
 
+async def documents_command(
+    ticker: str,
+    form_type: str,
+    date: str | None,
+    cache_dir: str,
+) -> int:
+    """List every document in a filing's accession"""
+    try:
+        container = Container(cache_dir=cache_dir, user_agent=get_user_agent())
+        handlers = MCPHandlers(container)
+        result = await handlers.list_documents(ticker=ticker, form_type=form_type, date=date)
+        print(format_list_documents(result))
+        return 0 if result["success"] else 1
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc()
+        return 1
+
+
+async def holdings_command(
+    ticker: str,
+    date: str | None,
+    form_type: str,
+    max_holdings: int,
+    cache_dir: str,
+) -> int:
+    """13F holdings from the information table"""
+    try:
+        container = Container(cache_dir=cache_dir, user_agent=get_user_agent())
+        handlers = MCPHandlers(container)
+        result = await handlers.thirteenf_holdings(
+            ticker=ticker, date=date, form_type=form_type, max_holdings=max_holdings
+        )
+        print(format_thirteenf_holdings(result))
+        return 0 if result["success"] else 1
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc()
+        return 1
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="edgar-ux CLI - Test MCP tools without server restart"
@@ -264,6 +315,10 @@ def main():
         help="Output format (default: text; xml = lossless passthrough for Forms 3/4/5/144)"
     )
     fetch_parser.add_argument(
+        "--document",
+        help="Fetch this document from the accession (sequence number or filename) instead of the primary one"
+    )
+    fetch_parser.add_argument(
         "--preview-lines",
         type=int,
         default=50,
@@ -284,6 +339,19 @@ def main():
     list_filings_parser.add_argument("form_type", help="Form type (e.g., 10-K)")
     list_filings_parser.add_argument("--ticker", help="Optional stock ticker (e.g., TSLA). Omit to see latest filings across all companies.")
     list_filings_parser.add_argument("--since", help="ISO timestamp filter on acceptance time (naive = US/Eastern)")
+
+    # documents command
+    documents_parser = subparsers.add_parser("documents", help="List documents in a filing's accession")
+    documents_parser.add_argument("ticker", help="Ticker (e.g. NVDA) or CIK (e.g. 1082621)")
+    documents_parser.add_argument("form_type", help="Form type (e.g. 13F-HR)")
+    documents_parser.add_argument("--date", help="Filing date filter (YYYY-MM-DD)")
+
+    # holdings command
+    holdings_parser = subparsers.add_parser("holdings", help="13F holdings (information table)")
+    holdings_parser.add_argument("ticker", help="CIK of the 13F filer (e.g. 1082621) or ticker (e.g. NVDA)")
+    holdings_parser.add_argument("--date", help="Filing date filter (YYYY-MM-DD)")
+    holdings_parser.add_argument("--form", dest="form_type", default="13F-HR", help="13F-HR (default) or 13F-HR/A")
+    holdings_parser.add_argument("--max", dest="max_holdings", type=int, default=50, help="Max positions to display (default: 50)")
 
     # insider command
     insider_parser = subparsers.add_parser("insider", help="Insider activity (Forms 3/4/5/144)")
@@ -313,7 +381,8 @@ def main():
             date=args.date,
             format_type=args.format,
             preview_lines=args.preview_lines,
-            cache_dir=args.cache_dir
+            cache_dir=args.cache_dir,
+            document=args.document
         ))
     elif args.command == "search":
         return asyncio.run(search_command(
@@ -331,6 +400,21 @@ def main():
             form_type=args.form_type,
             cache_dir=args.cache_dir,
             since=args.since
+        ))
+    elif args.command == "documents":
+        return asyncio.run(documents_command(
+            ticker=args.ticker,
+            form_type=args.form_type,
+            date=args.date,
+            cache_dir=args.cache_dir
+        ))
+    elif args.command == "holdings":
+        return asyncio.run(holdings_command(
+            ticker=args.ticker,
+            date=args.date,
+            form_type=args.form_type,
+            max_holdings=args.max_holdings,
+            cache_dir=args.cache_dir
         ))
     elif args.command == "insider":
         return asyncio.run(insider_command(

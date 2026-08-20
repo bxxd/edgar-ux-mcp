@@ -47,7 +47,9 @@ def format_fetch_filing(result: dict[str, Any]) -> str:
 
     # Header
     cached_indicator = "(cached)" if result.get('cached') else "(downloaded)"
-    lines.append(f"{meta['ticker'].upper()} {meta['form_type'].upper()} | {meta['filing_date']} | FETCHED {cached_indicator}")
+    doc = result.get('document')
+    doc_indicator = f" | DOC {doc}" if doc else ""
+    lines.append(f"{meta['ticker'].upper()} {meta['form_type'].upper()} | {meta['filing_date']}{doc_indicator} | FETCHED {cached_indicator}")
     lines.append("")
 
     # Metadata
@@ -55,6 +57,8 @@ def format_fetch_filing(result: dict[str, Any]) -> str:
     lines.append(f"COMPANY:     {company}")
     lines.append(f"FORM:        {meta['form_type']}")
     lines.append(f"FILED:       {meta['filing_date']}")
+    if doc:
+        lines.append(f"DOCUMENT:    {doc}")
 
     size_kb = meta['size_bytes'] / 1024
     size_str = f"{size_kb:.0f} KB"
@@ -66,9 +70,146 @@ def format_fetch_filing(result: dict[str, Any]) -> str:
     # Path
     lines.append(f"PATH: {result['path']}")
 
+    # PARTIAL FETCH — the whole point. A cover page that looks like a complete
+    # filing is how a $63B total gets reported with no issuer behind it.
+    omitted = result.get('omitted_documents') or []
+    if omitted:
+        ticker = meta['ticker']
+        form = meta['form_type'].upper()
+        lines.append("")
+        lines.append("─" * 70)
+        lines.append("PARTIAL — this is the primary document only.")
+        lines.append(f"{len(omitted)} document(s) in this accession were NOT returned:")
+        for d in omitted:
+            desc = f"  {d['description']}" if d.get('description') else ""
+            lines.append(f"  [{d.get('sequence', '?'):>2}] {d.get('document_type', ''):<20} {d.get('document', '')}{desc}")
+        if form.startswith("13F"):
+            lines.append("")
+            lines.append("The primary document of a 13F is the COVER PAGE: it carries")
+            lines.append("tableEntryTotal and tableValueTotal and NOT ONE ISSUER NAME.")
+            lines.append("Do not report that total as the portfolio without the table behind it.")
+            lines.append(f'  → thirteenf_holdings("{ticker}")   [holdings, reconciled]')
+            lines.append(f'  → fetch_filing("{ticker}", "{form}", document="{omitted[0].get("sequence", "2")}")   [raw]')
+        else:
+            lines.append("")
+            lines.append(f'  → fetch_filing("{ticker}", "{form}", document="{omitted[0].get("sequence", "2")}")')
+        lines.append("─" * 70)
+
     # Affordances
     lines.append("")
     lines.append(f'Try: Read(path, offset=0, limit=50) | search_filing("{meta["ticker"]}", "{meta["form_type"]}", "SEARCH TERM")')
+
+    return "\n".join(lines)
+
+
+def format_list_documents(result: dict[str, Any]) -> str:
+    """Format list_documents result as BBG Lite text.
+
+    Example output:
+        NVDA 13F-HR | 2026-08-14 | ACCESSION DOCUMENTS
+        ──────────────────────────────────────────────────────────────────────
+        SEQ  TYPE                  DOCUMENT              DESCRIPTION
+          1  13F-HR                primary_doc.xml       [PRIMARY]
+          2  INFORMATION TABLE     56904.xml             INFORMATION TABLE FOR FORM 13F
+    """
+    if not result.get("success"):
+        return f"ERROR: {result.get('error', 'Unknown error')}"
+
+    meta = result['metadata']
+    documents = result['documents']
+
+    lines = []
+    lines.append(f"{meta['ticker'].upper()} {meta['form_type'].upper()} | {meta['filing_date']} | ACCESSION DOCUMENTS")
+    lines.append(f"ACCESSION: {meta['accession_number']}")
+    lines.append("─" * 100)
+    lines.append(f"{'SEQ':>4}  {'TYPE':<22}  {'DOCUMENT':<34}  DESCRIPTION")
+    lines.append("─" * 100)
+
+    for d in documents:
+        seq = str(d.get('sequence') or '?')[:4].rjust(4)
+        dtype = str(d.get('document_type') or '')[:22].ljust(22)
+        name = str(d.get('document') or '')[:34].ljust(34)
+        desc = d.get('description') or ''
+        if d.get('is_primary'):
+            desc = f"[PRIMARY] {desc}".strip()
+        lines.append(f"{seq}  {dtype}  {name}  {desc}".rstrip())
+
+    lines.append("")
+    lines.append(f"{result['count']} document(s)")
+    lines.append("")
+    lines.append(f'Try: fetch_filing("{meta["ticker"]}", "{meta["form_type"]}", document="SEQ or FILENAME")')
+    if meta['form_type'].upper().startswith("13F"):
+        lines.append(f'     thirteenf_holdings("{meta["ticker"]}") for the parsed information table')
+
+    return "\n".join(lines)
+
+
+def format_thirteenf_holdings(result: dict[str, Any]) -> str:
+    """Format thirteenf_holdings result as BBG Lite text.
+
+    Cover-page totals are shown alongside the information-table sum so the two
+    are always visible together — a total with no table behind it is the bug
+    this tool exists to prevent.
+    """
+    if not result.get("success"):
+        return f"ERROR: {result.get('error', 'Unknown error')}"
+
+    meta = result['metadata']
+    holdings = result['holdings']
+    table_total = result['table_total_value'] or 0.0
+    cover_total = result.get('cover_total_value')
+    max_holdings = result.get('max_holdings') or 50
+
+    lines = []
+    header = f"{result['manager']} | {meta['form_type'].upper()}"
+    if result.get('report_period'):
+        header += f" | PERIOD {result['report_period']}"
+    lines.append(header)
+    lines.append(f"FILED {meta['filing_date']} | {meta['ticker']} | {meta['accession_number']}")
+    lines.append("─" * 104)
+
+    # Totals — table first, cover page beside it
+    lines.append(
+        f"PORTFOLIO: {result['count']} positions | ${_fmt_num(table_total)} (information table)"
+    )
+    if cover_total is not None:
+        agree = "✓ reconciles" if result.get('reconciles') else "✗ DISAGREES"
+        lines.append(
+            f"COVER PAGE: {result.get('cover_total_holdings')} positions | "
+            f"${_fmt_num(cover_total)}  [{agree}]"
+        )
+    if not result.get('reconciles'):
+        lines.append("")
+        lines.append("WARNING: the information table does not match the cover-page totals.")
+        lines.append("Report both, or neither — do not report the cover total alone.")
+    lines.append("")
+
+    # Holdings table
+    lines.append(f"{'#':>3}  {'ISSUER':<34}  {'TICKER':<7}  {'VALUE':>18}  {'% BOOK':>7}  {'SHARES/PRN':>15}")
+    lines.append("─" * 104)
+
+    shown = holdings[:max_holdings]
+    for i, h in enumerate(shown, 1):
+        issuer = str(h['issuer'])[:34].ljust(34)
+        ticker = str(h.get('ticker') or '-')[:7].ljust(7)
+        value = f"${_fmt_num(h['value'])}".rjust(18)
+        pct = (h['value'] / table_total * 100) if table_total else 0.0
+        pct_str = f"{pct:.1f}%".rjust(7)
+        shares = _fmt_num(h.get('shares')).rjust(15)
+        put_call = f"  [{h['put_call']}]" if h.get('put_call') else ""
+        lines.append(f"{i:>3}  {issuer}  {ticker}  {value}  {pct_str}  {shares}{put_call}")
+
+    if len(holdings) > len(shown):
+        lines.append("")
+        lines.append(f"Showing {len(shown)} of {len(holdings)} positions (largest first)")
+
+    lines.append("")
+    lines.append(
+        f'Try: thirteenf_holdings("{meta["ticker"]}", max_holdings={len(holdings)}) for every position'
+    )
+    lines.append(
+        f'     list_documents("{meta["ticker"]}", "{meta["form_type"]}") for the raw accession'
+    )
 
     return "\n".join(lines)
 

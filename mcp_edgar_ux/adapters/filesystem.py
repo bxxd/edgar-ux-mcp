@@ -27,15 +27,38 @@ class FilesystemCache(FilingRepository):
         path.mkdir(parents=True, exist_ok=True)
         return path
 
-    def _get_path(self, ticker: str, form_type: str, filing_date: str, format: str) -> Path:
-        """Get path for cached filing"""
-        ext = {"markdown": ".md", "text": ".txt", "html": ".html", "xml": ".xml"}[format]
+    def _get_path(
+        self,
+        ticker: str,
+        form_type: str,
+        filing_date: str,
+        format: str,
+        document: Optional[str] = None
+    ) -> Path:
+        """Get path for cached filing.
+
+        Primary documents keep the flat layout ({DATE}.{ext}). Named documents
+        from an accession go one level down ({DATE}/{document}) so list_all —
+        which reads a filename stem as the filing date — never sees them.
+        """
         cache_dir = self._ensure_dir(ticker, form_type)
+        if document:
+            accession_dir = cache_dir / filing_date
+            accession_dir.mkdir(parents=True, exist_ok=True)
+            return accession_dir / Path(document).name
+        ext = {"markdown": ".md", "text": ".txt", "html": ".html", "xml": ".xml"}[format]
         return cache_dir / f"{filing_date}{ext}"
 
-    def get(self, ticker: str, form_type: str, filing_date: str, format: str) -> Optional[Path]:
+    def get(
+        self,
+        ticker: str,
+        form_type: str,
+        filing_date: str,
+        format: str,
+        document: Optional[str] = None
+    ) -> Optional[Path]:
         """Get path to cached filing if it exists"""
-        path = self._get_path(ticker, form_type, filing_date, format)
+        path = self._get_path(ticker, form_type, filing_date, format, document)
         return path if path.exists() else None
 
     def save(self, content: FilingContent) -> Path:
@@ -45,7 +68,8 @@ class FilesystemCache(FilingRepository):
             filing.ticker,
             filing.form_type,
             filing.filing_date,
-            content.format
+            content.format,
+            content.document
         )
         path.write_text(content.content, encoding='utf-8')
         return path

@@ -22,7 +22,8 @@ class MCPHandlers:
         date: Optional[str] = None,
         format: str = "text",
         preview_lines: int = 200,
-        force_refetch: bool = False
+        force_refetch: bool = False,
+        document: Optional[str] = None
     ) -> dict[str, Any]:
         """Fetch filing and return path + preview + metadata"""
         try:
@@ -46,17 +47,32 @@ class MCPHandlers:
                 format=format,
                 include_exhibits=True,
                 preview_lines=preview_lines,
-                force_refetch=force_refetch
+                force_refetch=force_refetch,
+                document=document
             )
 
             # Check if this filing was already cached before we called the service
-            was_cached = (filing_content.filing.filing_date, normalized_format) in cached_dates
+            was_cached = (
+                False if document
+                else (filing_content.filing.filing_date, normalized_format) in cached_dates
+            )
 
             # No preview - agent should use Read tool on the returned path
             return {
                 "success": True,
                 "path": str(filing_content.path),
                 "cached": was_cached,
+                "document": filing_content.document,
+                "partial": bool(filing_content.omitted_documents),
+                "omitted_documents": [
+                    {
+                        "sequence": d.sequence,
+                        "document_type": d.document_type,
+                        "document": d.document,
+                        "description": d.description,
+                    }
+                    for d in filing_content.omitted_documents
+                ],
                 "metadata": {
                     "company": filing_content.filing.company_name,
                     "ticker": filing_content.filing.ticker,
@@ -74,6 +90,107 @@ class MCPHandlers:
             return {
                 "success": False,
                 "error": f"Failed to fetch filing: {str(e)}"
+            }
+
+    async def list_documents(
+        self,
+        ticker: str,
+        form_type: str,
+        date: Optional[str] = None
+    ) -> dict[str, Any]:
+        """List every document inside a filing's accession"""
+        try:
+            filing, documents = await asyncio.to_thread(
+                self.container.list_documents.execute,
+                ticker=ticker,
+                form_type=form_type,
+                date=date
+            )
+
+            return {
+                "success": True,
+                "metadata": {
+                    "company": filing.company_name,
+                    "ticker": filing.ticker,
+                    "form_type": filing.form_type,
+                    "filing_date": filing.filing_date,
+                    "accession_number": filing.accession_number,
+                    "sec_url": filing.sec_url,
+                },
+                "documents": [
+                    {
+                        "sequence": d.sequence,
+                        "document_type": d.document_type,
+                        "document": d.document,
+                        "description": d.description,
+                        "is_primary": d.is_primary,
+                        "url": d.url,
+                    }
+                    for d in documents
+                ],
+                "count": len(documents),
+            }
+
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Failed to list documents: {str(e)}"
+            }
+
+    async def thirteenf_holdings(
+        self,
+        ticker: str,
+        date: Optional[str] = None,
+        form_type: str = "13F-HR",
+        max_holdings: int = 50
+    ) -> dict[str, Any]:
+        """13F holdings from the information table"""
+        try:
+            report = await asyncio.to_thread(
+                self.container.thirteenf.execute,
+                ticker=ticker,
+                date=date,
+                form_type=form_type
+            )
+
+            return {
+                "success": True,
+                "manager": report.manager,
+                "report_period": report.report_period,
+                "cover_total_holdings": report.cover_total_holdings,
+                "cover_total_value": report.cover_total_value,
+                "table_total_value": report.table_total_value,
+                "reconciles": report.reconciles,
+                "max_holdings": max_holdings,
+                "metadata": {
+                    "ticker": report.filing.ticker,
+                    "company": report.filing.company_name,
+                    "form_type": report.filing.form_type,
+                    "filing_date": report.filing.filing_date,
+                    "accession_number": report.filing.accession_number,
+                    "sec_url": report.filing.sec_url,
+                },
+                "holdings": [
+                    {
+                        "issuer": h.issuer,
+                        "title_of_class": h.title_of_class,
+                        "cusip": h.cusip,
+                        "ticker": h.ticker,
+                        "value": h.value,
+                        "shares": h.shares,
+                        "share_type": h.share_type,
+                        "put_call": h.put_call,
+                        "investment_discretion": h.investment_discretion,
+                    }
+                    for h in report.holdings
+                ],
+                "count": len(report.holdings),
+            }
+
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Failed to get 13F holdings for {ticker}: {str(e)}"
             }
 
     async def search_filing(

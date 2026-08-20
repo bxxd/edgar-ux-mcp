@@ -86,11 +86,16 @@ class TestCoreFormTypes:
         # Must have current reports
         assert '8-K' in CORE_FORM_TYPES
 
-        # Must have registration statements
+        # Must have registration statements, including the automatic-shelf
+        # variant (S-3ASR) — a distinct form type, not matched by 'S-3'.
         assert 'S-1' in CORE_FORM_TYPES
+        assert 'S-3' in CORE_FORM_TYPES
+        assert 'S-3ASR' in CORE_FORM_TYPES
 
-        # Must have 13D/13G
-        assert 'SC 13D' in CORE_FORM_TYPES
+        # Foreign-issuer periodic reports. 6-K is deliberately IN core (the
+        # trawl protocol relies on it); the tool-doc list abbreviates and
+        # omits it, which is a doc bug, not a behavior one.
+        assert '6-K' in CORE_FORM_TYPES
 
     def test_core_form_types_excludes_noise(self):
         """Test noise forms are NOT in CORE_FORM_TYPES."""
@@ -101,9 +106,14 @@ class TestCoreFormTypes:
         assert '3' not in CORE_FORM_TYPES
         assert '5' not in CORE_FORM_TYPES
 
-        # Proxy statements removed
-        assert 'DEF 14A' not in CORE_FORM_TYPES
+        # Ownership filings excluded as noise — reachable via ALL or by form.
+        assert 'SC 13D' not in CORE_FORM_TYPES
+        assert 'SC 13G' not in CORE_FORM_TYPES
 
-        # Foreign issuer routine reports
-        assert '6-K' not in CORE_FORM_TYPES
+        # Proxy statements excluded. NB: this is a real coverage gap for
+        # contested votes (see the SEER 2026-07 miss) — the documented
+        # workaround is a per-ticker form_type="ALL" sweep. Asserted here so
+        # the exclusion stays a deliberate choice rather than a silent one.
+        assert 'DEF 14A' not in CORE_FORM_TYPES
+        assert 'DEFA14A' not in CORE_FORM_TYPES
 
