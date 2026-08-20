@@ -113,7 +113,7 @@ class FetchFilingService:
         # A fetch that silently returns part of a submission is the failure mode
         # this guards: a 13F cover page carries an authoritative-looking total
         # with not one issuer name behind it. Always report what was left behind.
-        omitted = [] if document else self._omitted(filing, include_exhibits)
+        omitted = [] if document else self._omitted(filing, format, include_exhibits)
 
         # Return metadata only — caller uses path for content access
         return FilingContent(
@@ -127,14 +127,14 @@ class FetchFilingService:
             omitted_documents=omitted
         )
 
-    def _omitted(self, filing, include_exhibits: bool) -> list:
+    def _omitted(self, filing, format: str, include_exhibits: bool) -> list:
         """Documents in the accession this fetch did not return.
 
         Never fatal: a filing you already have in hand beats an error about
         the index, so a failure here degrades to 'nothing known omitted'.
         """
         try:
-            return self.fetcher.omitted_documents(filing, include_exhibits)
+            return self.fetcher.omitted_documents(filing, format, include_exhibits)
         except Exception as e:  # noqa: BLE001 - advisory only
             logger.warning(
                 f"Could not enumerate documents for {filing.accession_number}: {e}"

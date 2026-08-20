@@ -63,7 +63,9 @@ class TestOmittedDocuments:
             FilingDocument("1", "13F-HR", "primary_doc.xml", "", is_primary=True),
             FilingDocument("2", "INFORMATION TABLE", "56904.xml", "INFORMATION TABLE FOR FORM 13F"),
         ])
-        omitted = adapter.omitted_documents(_filing(), include_exhibits=True)
+        omitted = adapter.omitted_documents(
+            _filing(), format="text", include_exhibits=True
+        )
         assert [d.document for d in omitted] == ["56904.xml"]
 
     def test_10k_xbrl_and_exhibits_do_not_trigger_a_warning(self):
@@ -75,7 +77,9 @@ class TestOmittedDocuments:
             FilingDocument("9", "CSS", "report.css", "IDEA: XBRL DOCUMENT"),
             FilingDocument("16", "ZIP", "xbrl.zip", "IDEA: XBRL DOCUMENT"),
         ])
-        assert adapter.omitted_documents(_filing(form_type="10-K"), include_exhibits=True) == []
+        assert adapter.omitted_documents(
+            _filing(form_type="10-K"), format="text", include_exhibits=True
+        ) == []
 
     def test_8k_graphics_do_not_trigger_a_warning(self):
         adapter = self._adapter_with([
@@ -83,15 +87,56 @@ class TestOmittedDocuments:
             FilingDocument("2", "EX-99.1", "exhibit991.htm", "EX-99.1"),
             FilingDocument("6", "GRAPHIC", "exhibit991001.jpg", ""),
         ])
-        assert adapter.omitted_documents(_filing(form_type="8-K"), include_exhibits=True) == []
+        assert adapter.omitted_documents(
+            _filing(form_type="8-K"), format="text", include_exhibits=True
+        ) == []
 
     def test_exhibits_count_as_omitted_when_not_appended(self):
         adapter = self._adapter_with([
             FilingDocument("1", "8-K", "tsla.htm", "8-K", is_primary=True),
             FilingDocument("2", "EX-99.1", "exhibit991.htm", "EX-99.1"),
         ])
-        omitted = adapter.omitted_documents(_filing(form_type="8-K"), include_exhibits=False)
+        omitted = adapter.omitted_documents(
+            _filing(form_type="8-K"), format="text", include_exhibits=False
+        )
         assert [d.document for d in omitted] == ["exhibit991.htm"]
+
+    def test_xml_passthrough_reports_exhibits_as_omitted(self):
+        """format='xml' returns the primary XML document ALONE.
+
+        fetch() takes an early return on that path and never reaches the
+        exhibit loop, so asking for exhibits does not produce them. Reporting
+        them as in hand is a false all-clear from the mechanism built to
+        prevent false all-clears.
+        """
+        adapter = self._adapter_with([
+            FilingDocument("1", "144", "primary_doc.xml", "FORM 144", is_primary=True),
+            FilingDocument("2", "EX-99.1", "exhibit991.htm", "EX-99.1"),
+        ])
+        omitted = adapter.omitted_documents(
+            _filing(form_type="144"), format="xml", include_exhibits=True
+        )
+        assert [d.document for d in omitted] == ["exhibit991.htm"]
+
+    @pytest.mark.parametrize("fmt", ["text", "markdown", "html"])
+    def test_rendered_formats_still_count_appended_exhibits_as_in_hand(self, fmt):
+        adapter = self._adapter_with([
+            FilingDocument("1", "8-K", "tsla.htm", "8-K", is_primary=True),
+            FilingDocument("2", "EX-99.1", "exhibit991.htm", "EX-99.1"),
+        ])
+        assert adapter.omitted_documents(
+            _filing(form_type="8-K"), format=fmt, include_exhibits=True
+        ) == []
+
+    def test_a_13f_information_table_fires_on_the_xml_path_too(self):
+        adapter = self._adapter_with([
+            FilingDocument("1", "13F-HR", "primary_doc.xml", "", is_primary=True),
+            FilingDocument("2", "INFORMATION TABLE", "56904.xml", "INFORMATION TABLE FOR FORM 13F"),
+        ])
+        omitted = adapter.omitted_documents(
+            _filing(), format="xml", include_exhibits=True
+        )
+        assert [d.document for d in omitted] == ["56904.xml"]
 
 
 class TestThirteenFReconciliation:
