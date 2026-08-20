@@ -387,7 +387,7 @@ CACHE_DIR=/tmp/sec-filings-test ./cli fetch TSLA 10-K
 - `tests/test_cache_addressing.py` — drives the real `FetchFilingService`
   against the real `FilesystemCache` with a fake SEC. Covers two filings on one
   date, cache hits for a CIK-addressed filer, and disk accounting ✅
-- 36 tests, all passing, **none of which touch the network**. There is still no
+- 37 tests, all passing, **none of which touch the network**. There is still no
   coverage of a real SEC response, and no CI — nothing runs the suite on push —
   and `make lint` cannot run because mypy and ruff are absent from the dev
   dependencies.

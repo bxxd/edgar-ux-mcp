@@ -7,6 +7,7 @@ import asyncio
 from typing import Any, Optional
 
 from ...container import Container
+from ..edgar import normalize_identifier
 
 
 class MCPHandlers:
@@ -27,10 +28,13 @@ class MCPHandlers:
     ) -> dict[str, Any]:
         """Fetch filing and return path + preview + metadata"""
         try:
-            # Get list of cached filings to check if this one exists
+            # Probe the cache under the label it is stored by. A CIK filer is
+            # saved as CIK##########, so probing the caller's raw digits finds
+            # nothing and every fetch reports itself freshly downloaded.
+            cache_label, _ = normalize_identifier(ticker)
             cached_filings = await asyncio.to_thread(
                 self.container.cache.list_all,
-                ticker=ticker,
+                ticker=cache_label,
                 form_type=form_type
             )
             # Normalize format names: cache uses extensions (txt, md, html, xml), API uses full names
