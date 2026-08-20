@@ -172,6 +172,11 @@ def format_thirteenf_holdings(result: dict[str, Any]) -> str:
     lines.append(
         f"PORTFOLIO: {result['count']} positions | ${_fmt_num(table_total)} (information table)"
     )
+    if result.get('reported_in_thousands'):
+        lines.append(
+            "UNITS: filed in THOUSANDS of dollars (Form 13F pre-2023-01-03); "
+            "rescaled to whole dollars above."
+        )
     if cover_total is not None:
         agree = "✓ reconciles" if result.get('reconciles') else "✗ DISAGREES"
         lines.append(

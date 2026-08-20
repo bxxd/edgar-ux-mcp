@@ -76,8 +76,17 @@ class FetchFilingService:
         filing = self.fetcher.get_latest(ticker, form_type, date)
 
         # Check if already cached (skip if force_refetch)
+        # Address the resolved filing, never the caller's raw arguments: an
+        # identifier like "1082621" normalizes to the label "CIK0001082621"
+        # that save() writes under, and the date alone no longer identifies
+        # one filing.
         cached_path = self.repository.get(
-            ticker, form_type, filing.filing_date, format, document
+            filing.ticker,
+            form_type,
+            filing.filing_date,
+            filing.accession_number,
+            format,
+            document,
         ) if not force_refetch else None
 
         if cached_path:
@@ -104,7 +113,7 @@ class FetchFilingService:
         # A fetch that silently returns part of a submission is the failure mode
         # this guards: a 13F cover page carries an authoritative-looking total
         # with not one issuer name behind it. Always report what was left behind.
-        omitted = [] if document else self._omitted(filing, include_exhibits)
+        omitted = [] if document else self._omitted(filing, format, include_exhibits)
 
         # Return metadata only — caller uses path for content access
         return FilingContent(
@@ -118,14 +127,14 @@ class FetchFilingService:
             omitted_documents=omitted
         )
 
-    def _omitted(self, filing, include_exhibits: bool) -> list:
+    def _omitted(self, filing, format: str, include_exhibits: bool) -> list:
         """Documents in the accession this fetch did not return.
 
         Never fatal: a filing you already have in hand beats an error about
         the index, so a failure here degrades to 'nothing known omitted'.
         """
         try:
-            return self.fetcher.omitted_documents(filing, include_exhibits)
+            return self.fetcher.omitted_documents(filing, format, include_exhibits)
         except Exception as e:  # noqa: BLE001 - advisory only
             logger.warning(
                 f"Could not enumerate documents for {filing.accession_number}: {e}"
@@ -220,7 +229,13 @@ class SearchFilingService:
         filing = self.fetcher.get_latest(ticker, form_type, date)
 
         # Ensure filing is cached
-        cached_path = self.repository.get(ticker, form_type, filing.filing_date, format)
+        cached_path = self.repository.get(
+            filing.ticker,
+            form_type,
+            filing.filing_date,
+            filing.accession_number,
+            format,
+        )
 
         if not cached_path:
             # Fetch and cache it first

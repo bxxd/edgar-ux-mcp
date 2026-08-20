@@ -155,9 +155,12 @@ an 8-K's 44 extras are all silent; a 13F's information table always fires.
   when the accession holds substance it did not return (see above)
 - `document=<sequence|filename>` fetches a specific document from the accession
   instead — the general answer to "give me the other documents in here".
-  Cached at `{ID}/{FORM}/{DATE}/{document}` so it is never mistaken for a filing
+  Cached at `{ID}/{FORM}/{DATE}-{ACCESSION}/{document}` so it is never mistaken
+  for a filing
 - `format="xml"` = lossless passthrough for Forms 3/4/5/144 (the text render
-  DROPS the aff10b5One checkbox and all footnotes)
+  DROPS the aff10b5One checkbox and all footnotes). It returns the primary XML
+  document ALONE — no exhibits — so a Form 3 carrying an EX-24 power of
+  attorney comes back flagged PARTIAL on this path and whole on the text path
 - Returns: Path + metadata + `omitted_documents`
 
 **2a. `list_documents(ticker, form_type, date=None)` - ACCESSION CONTENTS**
@@ -174,6 +177,10 @@ an 8-K's 44 extras are all silent; a 13F's information table always fires.
   `tableValueTotal`) and says so explicitly when they disagree. Both totals are
   always printed together — a cover total with no table behind it is the exact
   bug this tool exists to prevent
+- **Values are whole dollars.** Form 13F reported in THOUSANDS until the SEC
+  amendment effective 2023-01-03 (Q4-2022 periods onward); earlier filings are
+  rescaled and the output says so. Reconciliation cannot detect the unit,
+  because the cover total carries the same one as the table it checks
 
 **3. `search_filing(ticker, form_type, pattern, context_lines=2)` - CONTENT SEARCH**
 - Fuzzy search using `ugrep` (fuzzy=1, tolerates 1-char differences)
@@ -200,10 +207,13 @@ an 8-K's 44 extras are all silent; a 13F's information table always fires.
 **Default Location**: `/var/idio-mcp-cache/sec-filings/`
 **Configurable**: Set `CACHE_DIR` environment variable
 
-**Organization**: `/{TICKER|CIK}/{FORM}/{YYYY-MM-DD}.{ext}` — primary documents
-**Accession documents**: `/{TICKER|CIK}/{FORM}/{YYYY-MM-DD}/{document}` — one level
-down, because `list_all()` reads a filename stem as the filing date and a
-document stored flat would surface as a filing dated `2026-08-14__56904`
+**Organization**: `/{TICKER|CIK}/{FORM}/{YYYY-MM-DD}-{ACCESSION}.{ext}` — primary
+documents. The accession number is what makes the path unique: a company files
+more than once a day routinely, so a date-keyed path addresses two filings at
+once and serves whichever was written first
+**Accession documents**: `/{TICKER|CIK}/{FORM}/{YYYY-MM-DD}-{ACCESSION}/{document}`
+— one level down, because `list_all()` reads a filename stem as a filing and a
+document stored flat would surface as one
 **Formats**: `.txt` (preferred), `.md`, `.html`, `.xml` (raw passthrough for ownership forms)
 
 ---
@@ -377,10 +387,16 @@ CACHE_DIR=/tmp/sec-filings-test ./cli fetch TSLA 10-K
 - CLI tested and working ✅
 - `tests/test_accession_documents.py` — CIK addressing, omitted-document rule,
   13F reconciliation, cache paths, PARTIAL formatting (22 tests, no network) ✅
-- `tests/test_hexagonal.py::TestCoreFormTypes` has 2 pre-existing failures: it
-  asserts `SC 13D` is in `CORE_FORM_TYPES` and `6-K` is not, but the code
-  deliberately does the opposite (see the comment in `CORE_FORM_TYPES`). Stale
-  test, not a code bug — left alone 🔄
+- `tests/test_hexagonal.py` — hexagonal core contracts, including
+  `TestCoreFormTypes`, which asserts the deliberate CORE membership choices:
+  `SC 13D` excluded, `6-K` included, `S-3ASR` included ✅
+- `tests/test_cache_addressing.py` — drives the real `FetchFilingService`
+  against the real `FilesystemCache` with a fake SEC. Covers two filings on one
+  date, cache hits for a CIK-addressed filer, and disk accounting ✅
+- 45 tests, all passing, **none of which touch the network**. There is still no
+  coverage of a real SEC response, and no CI — nothing runs the suite on push —
+  and `make lint` cannot run because mypy and ruff are absent from the dev
+  dependencies.
 
 ---
 

@@ -43,7 +43,7 @@ class Holding:
     issuer: str
     title_of_class: str
     cusip: str
-    value: float  # USD, as reported
+    value: float  # whole USD (pre-2023 filings are rescaled from thousands)
     shares: Optional[float] = None
     share_type: Optional[str] = None  # SH or PRN
     put_call: Optional[str] = None
@@ -65,6 +65,10 @@ class ThirteenFReport:
     cover_total_holdings: Optional[int]  # tableEntryTotal
     cover_total_value: Optional[float]  # tableValueTotal
     holdings: list["Holding"]
+    # Values were filed in thousands and have been rescaled to whole dollars.
+    # Recorded so the reader is told, rather than handed a silently altered
+    # number from a primary source.
+    reported_in_thousands: bool = False
 
     @property
     def table_total_value(self) -> float:
@@ -115,6 +119,7 @@ class CachedFiling:
     ticker: str
     form_type: str
     filing_date: str
+    accession_number: str
     path: Path
     size_bytes: int
     format: str  # "text", "markdown", or "html"
