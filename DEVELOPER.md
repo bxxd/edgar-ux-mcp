@@ -96,21 +96,84 @@ path = await asyncio.to_thread(cache.save, ...)
 
 **Why**: Keeps server responsive, allows concurrent MCP requests
 
-### MCP Tools (5 tools)
+### Addressing: ticker OR CIK
+
+Every tool that takes `ticker` also takes a **CIK** (`1082621`, `0001082621`,
+`CIK0001082621`). This is not a convenience — it is the only way to address a
+whole class of filer.
+
+EDGAR has issuer-side forms (10-K, 8-K: the filer is the company) and
+**holder-side** forms (13F, 13D/G: the filer is whoever owns the position).
+Holders are frequently not issuers: `HARVARD MANAGEMENT CO INC` is CIK
+0001082621 with no ticker, because an endowment has no listed stock. A
+ticker-keyed interface cannot reach it at all.
+
+CIK-addressed filers get the cache label `CIK0001082621` so they can never be
+confused with a ticker.
+
+### Submissions are bundles, not files
+
+An accession contains multiple documents. `fetch_filing()` returns the
+**primary** one — and for some forms the primary document is not where the data
+is. The canonical case is 13F-HR, whose primary document is a cover page
+carrying `tableEntryTotal` and `tableValueTotal` and **not one issuer name**.
+
+That is a dangerous shape: the cover page is a successful-looking fetch with an
+authoritative-looking dollar total. So `fetch_filing()` never returns one
+silently — it enumerates the accession and reports what it left behind:
+
+```
+PARTIAL — this is the primary document only.
+1 document(s) in this accession were NOT returned:
+  [ 2] INFORMATION TABLE    information_table.xml  INFORMATION TABLE
+
+The primary document of a 13F is the COVER PAGE: it carries
+tableEntryTotal and tableValueTotal and NOT ONE ISSUER NAME.
+Do not report that total as the portfolio without the table behind it.
+```
+
+The "was anything left behind" rule is exact, not heuristic. A document counts
+as omitted unless it is the primary, an `EX-*` exhibit (already appended), XBRL
+viewer output (`IDEA: XBRL DOCUMENT`), or packaging (`GRAPHIC`/`CSS`/`JS`/
+`JSON`/`ZIP`/`EXCEL`). Verified against real accessions: a 10-K's 12 extras and
+an 8-K's 44 extras are all silent; a 13F's information table always fires.
+
+### MCP Tools (7 tools)
 
 **1. `list_filings(ticker, form_type, since=None)` - DISCOVERY**
 - Shows available filings (both cached + available from SEC)
+- `ticker` accepts a CIK — required for 13F filers, which have no ticker
 - Every filing shows ACCEPTANCE datetime (ET) — the EDGAR-native time axis
 - `since=<ISO timestamp>` filters on acceptance time (naive = US/Eastern) —
   diff "what landed after the last sweep ran" without hand-rolling the atom feed
 - Returns: Table with cached indicator, dates, acceptance times
 
-**2. `fetch_filing(ticker, form_type, date=None, format="text")` - DOWNLOAD**
+**2. `fetch_filing(ticker, form_type, date=None, format="text", document=None)` - DOWNLOAD**
 - Downloads filing (if not cached), returns path
 - Filing saved to disk (not loaded into context)
+- Returns the submission's PRIMARY document, and **flags the fetch PARTIAL**
+  when the accession holds substance it did not return (see above)
+- `document=<sequence|filename>` fetches a specific document from the accession
+  instead — the general answer to "give me the other documents in here".
+  Cached at `{ID}/{FORM}/{DATE}/{document}` so it is never mistaken for a filing
 - `format="xml"` = lossless passthrough for Forms 3/4/5/144 (the text render
   DROPS the aff10b5One checkbox and all footnotes)
-- Returns: Path + metadata
+- Returns: Path + metadata + `omitted_documents`
+
+**2a. `list_documents(ticker, form_type, date=None)` - ACCESSION CONTENTS**
+- Every document in the submission: sequence, type, filename, description
+- Answers "what else is in this accession?" before committing to a fetch
+- Feed a sequence or filename straight into `fetch_filing(..., document=...)`
+
+**2b. `thirteenf_holdings(ticker, date=None, max_holdings=50)` - 13F POSITIONS**
+- The information table: issuer, CUSIP, resolved ticker, value, % of book,
+  shares — sorted largest first
+- Address the manager by CIK (`thirteenf_holdings("1082621")`) or by ticker when
+  the manager is itself listed (`thirteenf_holdings("NVDA")`)
+- **Reconciles the table against the cover page** (`tableEntryTotal` /
+  `tableValueTotal`) and says so explicitly when they disagree. Both totals are
+  always printed together — a cover total with no table behind it is the exact
+  bug this tool exists to prevent
 
 **3. `search_filing(ticker, form_type, pattern, context_lines=2)` - CONTENT SEARCH**
 - Fuzzy search using `ugrep` (fuzzy=1, tolerates 1-char differences)
@@ -137,7 +200,10 @@ path = await asyncio.to_thread(cache.save, ...)
 **Default Location**: `/var/idio-mcp-cache/sec-filings/`
 **Configurable**: Set `CACHE_DIR` environment variable
 
-**Organization**: `/{TICKER}/{FORM}/{YYYY-MM-DD}.{ext}`
+**Organization**: `/{TICKER|CIK}/{FORM}/{YYYY-MM-DD}.{ext}` — primary documents
+**Accession documents**: `/{TICKER|CIK}/{FORM}/{YYYY-MM-DD}/{document}` — one level
+down, because `list_all()` reads a filename stem as the filing date and a
+document stored flat would surface as a filing dated `2026-08-14__56904`
 **Formats**: `.txt` (preferred), `.md`, `.html`, `.xml` (raw passthrough for ownership forms)
 
 ---
@@ -191,6 +257,9 @@ poetry install
 ./cli list-filings TSLA 10-K            # List available filings
 ./cli fetch TSLA 10-K                   # Fetch with preview
 ./cli search TSLA 10-K "vehicle"        # Search filing
+./cli documents NVDA 13F-HR             # What's in the accession?
+./cli fetch NVDA 13F-HR --document 2    # Fetch a named doc from the accession
+./cli holdings 1082621                  # 13F holdings by CIK (no ticker exists)
 
 # Run MCP server (for Claude Code integration)
 make server                             # Start in background (port 5012 dev, 5002 prod)
@@ -294,18 +363,24 @@ CACHE_DIR=/tmp/sec-filings-test ./cli fetch TSLA 10-K
 
 **MCP Integration**: Complete ✅
 - HTTP/SSE server (170 lines, port 5012 dev / 5002 prod)
-- Five tools: fetch_filing, search_filing, list_filings, get_financial_statements, insider_activity
+- Seven tools: fetch_filing, search_filing, list_filings, list_documents,
+  thirteenf_holdings, get_financial_statements, insider_activity
 - Shared tool definitions (DRY)
 - BBG Lite formatted output
 
 **CLI**: Complete ✅
-- Commands: list-tools, fetch, search, list-filings, financials
+- Commands: list-tools, fetch, search, list-filings, documents, holdings, insider, financials
 - Uses same hexagonal core as MCP server
 - Fast iteration without server restart
 
-**Testing**: Needs Update
+**Testing**: Partial
 - CLI tested and working ✅
-- Unit tests need update for hexagonal architecture 🔄
+- `tests/test_accession_documents.py` — CIK addressing, omitted-document rule,
+  13F reconciliation, cache paths, PARTIAL formatting (22 tests, no network) ✅
+- `tests/test_hexagonal.py::TestCoreFormTypes` has 2 pre-existing failures: it
+  asserts `SC 13D` is in `CORE_FORM_TYPES` and `6-K` is not, but the code
+  deliberately does the opposite (see the comment in `CORE_FORM_TYPES`). Stale
+  test, not a code bug — left alone 🔄
 
 ---
 

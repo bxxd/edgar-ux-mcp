@@ -22,13 +22,58 @@ except ImportError:
     ConnectTimeout = Exception
     TimeoutException = Exception
 
-from ..core.domain import Filing, InsiderFiling, InsiderTransaction
+from ..core.domain import (
+    Filing,
+    FilingDocument,
+    Holding,
+    InsiderFiling,
+    InsiderTransaction,
+    ThirteenFReport,
+)
 from ..core.ports import FilingFetcher
 
 logger = logging.getLogger(__name__)
 
 # EDGAR business semantics are US/Eastern — acceptance times normalized to ET
 EASTERN = ZoneInfo("America/New_York")
+
+# A bare number (or CIK-prefixed number) addresses a filer by CIK rather than
+# ticker. 13F filers, endowments and family offices are holders, not issuers —
+# they have a CIK and no ticker, so a ticker-only interface cannot reach them.
+_CIK_PATTERN = re.compile(r"^(?:CIK[-_\s]?)?(\d{1,10})$", re.IGNORECASE)
+
+
+def normalize_identifier(identifier: str) -> tuple[str, Optional[int]]:
+    """Resolve a ticker-or-CIK into (label, cik).
+
+    'NVDA' -> ('NVDA', None) · '1082621' / 'CIK0001082621' -> ('CIK0001082621', 1082621)
+
+    The label is what gets used for cache paths and display, so a CIK-addressed
+    filer is never mistaken for a ticker.
+    """
+    cleaned = (identifier or "").strip()
+    if not cleaned:
+        raise ValueError("identifier must be a ticker (e.g. NVDA) or a CIK (e.g. 1082621)")
+    m = _CIK_PATTERN.match(cleaned)
+    if m:
+        cik = int(m.group(1))
+        return f"CIK{cik:010d}", cik
+    return cleaned.upper(), None
+
+
+def _company(identifier: str) -> Company:
+    """Company for a ticker or a CIK"""
+    _, cik = normalize_identifier(identifier)
+    return Company(cik) if cik is not None else Company(identifier.upper())
+
+
+# Attachment classes that are packaging, not content. Everything that is NOT
+# one of these — and not the primary document or an EX-* exhibit — is substance
+# a fetch left behind. Derived from actual EDGAR accessions, not guessed:
+# a 10-K's extras are all EX-*/IDEA, an 8-K's add GRAPHIC, and a 13F's
+# INFORMATION TABLE survives every filter (which is the point).
+_XBRL_VIEWER_DESCRIPTION = "IDEA: XBRL DOCUMENT"
+_PACKAGING_TYPES = {"GRAPHIC", "CSS", "JS", "JSON", "ZIP", "EXCEL"}
 
 
 def _to_eastern_iso(value) -> Optional[str]:
@@ -318,8 +363,11 @@ class EdgarAdapter(FilingFetcher):
                     )
                 raise ValueError(f"Failed to get latest filings: {str(e)}")
 
-        # If ticker specified, get filings for that specific company
-        company = Company(ticker)
+        # If an identifier is specified, get filings for that specific filer.
+        # `ticker` may be a ticker OR a CIK — 13F filers have no ticker.
+        label, _ = normalize_identifier(ticker)
+        company = _company(ticker)
+        ticker = label
 
         # Get historical filings (up to ~10 PM EST previous day)
         historical_filings = company.get_filings(form=edgar_form_type if edgar_form_type else None)
@@ -432,13 +480,149 @@ class EdgarAdapter(FilingFetcher):
 
         return deduplicated
 
-    def fetch(self, filing: Filing, format: str = "text", include_exhibits: bool = True) -> str:
-        """Download filing content from SEC"""
-        company = Company(filing.ticker)
-        edgar_filing = company.get_filings(
+    def _edgar_filing(self, filing: Filing):
+        """Resolve a domain Filing back to its edgartools filing object"""
+        company = _company(filing.ticker)
+        return company.get_filings(
             form=filing.form_type,
             accession_number=filing.accession_number
         )[0]
+
+    @staticmethod
+    def _to_domain_document(attachment, primary_sequence: Optional[str]) -> FilingDocument:
+        sequence = str(getattr(attachment, 'sequence_number', '') or '')
+        return FilingDocument(
+            sequence=sequence,
+            document_type=str(attachment.document_type or ''),
+            document=str(attachment.document or ''),
+            description=(getattr(attachment, 'description', None) or None),
+            url=getattr(attachment, 'url', None),
+            is_primary=(sequence == primary_sequence),
+        )
+
+    def list_documents(self, filing: Filing) -> list[FilingDocument]:
+        """Every document in the accession — the verb for 'what else is in here'"""
+        edgar_filing = self._edgar_filing(filing)
+        attachments = list(edgar_filing.attachments)
+        primary_sequence = next(
+            (str(getattr(a, 'sequence_number', '') or '') for a in attachments),
+            None
+        )
+        return [self._to_domain_document(a, primary_sequence) for a in attachments]
+
+    def omitted_documents(self, filing: Filing, include_exhibits: bool = True) -> list[FilingDocument]:
+        """Substantive documents a fetch() would NOT return.
+
+        fetch() returns the primary document plus EX-* exhibits. Anything else
+        that isn't XBRL viewer output or packaging is content left behind —
+        for a 13F-HR that is the information table holding every position.
+        """
+        omitted = []
+        for doc in self.list_documents(filing):
+            if doc.is_primary:
+                continue
+            if include_exhibits and doc.document_type.upper().startswith('EX-'):
+                continue
+            if (doc.description or '').strip().upper() == _XBRL_VIEWER_DESCRIPTION:
+                continue
+            if doc.document_type.upper() in _PACKAGING_TYPES:
+                continue
+            omitted.append(doc)
+        return omitted
+
+    @staticmethod
+    def _manager_name(report) -> Optional[str]:
+        """Manager name as a string — investment_manager is an object, not a name"""
+        for attr in ('investment_manager', 'management_company_name', 'manager_name'):
+            value = getattr(report, attr, None)
+            if value is None:
+                continue
+            name = getattr(value, 'name', None) or (value if isinstance(value, str) else None)
+            if name and str(name).strip():
+                return str(name).strip()
+        return None
+
+    def get_thirteenf(self, filing: Filing) -> ThirteenFReport:
+        """Parse a 13F into cover-page totals AND the information table."""
+        edgar_filing = self._edgar_filing(filing)
+        report = edgar_filing.obj()
+
+        infotable = getattr(report, 'infotable', None)
+        if infotable is None:
+            raise ValueError(
+                f"{filing.form_type} {filing.accession_number} has no information table. "
+                "13F-NT filings report holdings in a separate combined filing."
+            )
+
+        def _cell(row, *names):
+            """Read a column, treating pandas NaN/empty as absent.
+
+            Without the NaN guard a missing ticker renders as the string 'nan',
+            which reads like data. A private issuer (SpaceX, Cerebras) genuinely
+            has no ticker — say so with '-', never with 'nan'.
+            """
+            for name in names:
+                if name not in row:
+                    continue
+                value = row[name]
+                if value is None or value != value:  # NaN check
+                    continue
+                text = str(value).strip()
+                if text and text.lower() != 'nan':
+                    return value
+            return None
+
+        holdings = []
+        for _, row in infotable.iterrows():
+            value = _safe_float(_cell(row, 'Value'))
+            if value is None:
+                continue
+            ticker = _cell(row, 'Ticker')
+            holdings.append(Holding(
+                issuer=str(_cell(row, 'Issuer') or '').strip(),
+                title_of_class=str(_cell(row, 'Class') or '').strip(),
+                cusip=str(_cell(row, 'Cusip') or '').strip(),
+                value=value,
+                shares=_safe_float(_cell(row, 'SharesPrnAmount')),
+                share_type=(str(_cell(row, 'Type')).strip() if _cell(row, 'Type') else None),
+                put_call=(str(_cell(row, 'PutCall')).strip() if _cell(row, 'PutCall') else None),
+                investment_discretion=(
+                    str(_cell(row, 'InvestmentDiscretion')).strip()
+                    if _cell(row, 'InvestmentDiscretion') else None
+                ),
+                ticker=(str(ticker).strip() if ticker else None),
+            ))
+
+        holdings.sort(key=lambda h: h.value, reverse=True)
+
+        return ThirteenFReport(
+            filing=filing,
+            manager=self._manager_name(report) or filing.company_name or filing.ticker,
+            report_period=(
+                str(report.report_period) if getattr(report, 'report_period', None) else None
+            ),
+            cover_total_holdings=(
+                int(report.total_holdings) if getattr(report, 'total_holdings', None) is not None else None
+            ),
+            cover_total_value=_safe_float(getattr(report, 'total_value', None)),
+            holdings=holdings,
+        )
+
+    def fetch(
+        self,
+        filing: Filing,
+        format: str = "text",
+        include_exhibits: bool = True,
+        document: Optional[str] = None,
+    ) -> str:
+        """Download filing content from SEC"""
+        edgar_filing = self._edgar_filing(filing)
+
+        # A named document addresses one file inside the accession directly —
+        # the only way to reach a 13F information table, whose sibling primary
+        # document is just a cover page.
+        if document:
+            return self._fetch_document(edgar_filing, filing, document)
 
         # Download content in requested format
         if format == "xml":
@@ -474,13 +658,44 @@ class EdgarAdapter(FilingFetcher):
 
         return content
 
+    def _fetch_document(self, edgar_filing, filing: Filing, document: str) -> str:
+        """Download one named document from the accession (by sequence or filename)"""
+        wanted = str(document).strip()
+        attachments = list(edgar_filing.attachments)
+
+        match = None
+        for attachment in attachments:
+            sequence = str(getattr(attachment, 'sequence_number', '') or '')
+            name = str(attachment.document or '')
+            if wanted == sequence or wanted.lower() == name.lower():
+                match = attachment
+                break
+
+        if match is None:
+            available = ", ".join(
+                f"{str(getattr(a, 'sequence_number', '') or '?')}:{a.document}" for a in attachments
+            )
+            raise ValueError(
+                f"No document {document!r} in accession {filing.accession_number}. "
+                f"Available: {available}"
+            )
+
+        content = match.download()
+        if isinstance(content, bytes):
+            content = content.decode('utf-8', errors='replace')
+        if not content:
+            raise ValueError(
+                f"Document {match.document!r} in {filing.accession_number} is empty"
+            )
+        return content
+
     def get_insider_activity(self, ticker: str, days: int) -> list[InsiderFiling]:
         """Fetch and parse ownership filings (Forms 3/4/5/144) for the last N days.
 
         Forms 3/4/5 are parsed from raw XML (single fetch per filing) so the
         aff10b5One checkbox and footnotes survive — the text render drops both.
         """
-        company = Company(ticker)
+        company = _company(ticker)
         cutoff = (datetime.now(EASTERN) - timedelta(days=days)).date().isoformat()
         filings = company.get_filings(
             form=["3", "3/A", "4", "4/A", "5", "5/A", "144", "144/A"],

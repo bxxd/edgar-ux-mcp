@@ -35,8 +35,10 @@ from .formatters import (
     format_fetch_filing,
     format_search_filing,
     format_list_filings,
+    format_list_documents,
     format_financial_statements,
-    format_insider_activity
+    format_insider_activity,
+    format_thirteenf_holdings
 )
 
 # Configure logging with millisecond precision
@@ -125,6 +127,8 @@ async def list_tools() -> list[Tool]:
         Tool(**TOOL_SCHEMAS["fetch_filing"]),
         Tool(**TOOL_SCHEMAS["search_filing"]),
         Tool(**TOOL_SCHEMAS["list_filings"]),
+        Tool(**TOOL_SCHEMAS["list_documents"]),
+        Tool(**TOOL_SCHEMAS["thirteenf_holdings"]),
         Tool(**TOOL_SCHEMAS["get_financial_statements"]),
         Tool(**TOOL_SCHEMAS["insider_activity"])
     ]
@@ -146,6 +150,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         "fetch_filing": format_fetch_filing,
         "search_filing": format_search_filing,
         "list_filings": format_list_filings,
+        "list_documents": format_list_documents,
+        "thirteenf_holdings": format_thirteenf_holdings,
         "get_financial_statements": format_financial_statements,
         "insider_activity": format_insider_activity
     }
@@ -170,7 +176,8 @@ async def _dispatch_tool(name: str, arguments: dict[str, Any]) -> Any:
             date=arguments.get("date"),
             format=arguments.get("format", "text"),
             preview_lines=arguments.get("preview_lines", 200),
-            force_refetch=arguments.get("force_refetch", False)
+            force_refetch=arguments.get("force_refetch", False),
+            document=arguments.get("document")
         )
 
     elif name == "search_filing":
@@ -192,6 +199,21 @@ async def _dispatch_tool(name: str, arguments: dict[str, Any]) -> Any:
             start=arguments.get("start", 0),
             max=arguments.get("max", 15),
             since=arguments.get("since")
+        )
+
+    elif name == "list_documents":
+        return await handlers.list_documents(
+            ticker=arguments["ticker"],
+            form_type=arguments["form_type"],
+            date=arguments.get("date")
+        )
+
+    elif name == "thirteenf_holdings":
+        return await handlers.thirteenf_holdings(
+            ticker=arguments["ticker"],
+            date=arguments.get("date"),
+            form_type=arguments.get("form_type", "13F-HR"),
+            max_holdings=arguments.get("max_holdings", 50)
         )
 
     elif name == "insider_activity":

@@ -126,15 +126,42 @@ Grep("supply chain", path="/var/idio-mcp-cache/sec-filings/TSLA/10-K/2025-04-30.
 
 ## Tools
 
-### `fetch_filing(ticker, form_type, date=None, format="text")`
+### Addressing a filer: ticker or CIK
+
+Every tool below accepts a **CIK** wherever it accepts a ticker (`1082621`,
+`0001082621`, `CIK0001082621`).
+
+This matters because EDGAR has issuer-side forms (10-K, 8-K — the filer is the
+company) and holder-side forms (13F, 13D/G — the filer is whoever owns the
+position). Holders often aren't issuers: `HARVARD MANAGEMENT CO INC` is CIK
+0001082621 with no ticker, because an endowment has no listed stock. Ticker-only
+addressing cannot reach it.
+
+### `fetch_filing(ticker, form_type, date=None, format="text", document=None)`
 
 Download SEC filing to disk, return path.
 
 **Args:**
-- `ticker`: Stock ticker (e.g., "TSLA", "AAPL")
+- `ticker`: Ticker ("TSLA") or CIK ("1082621")
 - `form_type`: Form type ("10-K", "10-Q", "8-K", etc.)
 - `date`: Optional date filter (YYYY-MM-DD). Returns filing closest >= date.
 - `format`: Output format - "text" (default, clean), "markdown" (may have XBRL), or "html"
+- `document`: Fetch a specific document from the accession (sequence number or
+  filename) instead of the primary one
+
+**A submission is a bundle, not a file.** This returns the accession's *primary*
+document. When the accession holds substance that wasn't returned, the output
+says so rather than looking complete:
+
+```
+PARTIAL — this is the primary document only.
+1 document(s) in this accession were NOT returned:
+  [ 2] INFORMATION TABLE    information_table.xml  INFORMATION TABLE
+```
+
+For a 13F-HR the primary document is the **cover page** — it carries
+`tableEntryTotal` and `tableValueTotal` and not one issuer name. Use
+`thirteenf_holdings()` for the positions.
 
 **Returns:**
 ```json
@@ -162,6 +189,57 @@ fetch_filing("TSLA", "10-K", date="2024-01-01")
 
 # Markdown format (may contain XBRL artifacts)
 fetch_filing("AAPL", "10-Q", format="markdown")
+
+# A named document from inside the accession
+fetch_filing("NVDA", "13F-HR", document="2")
+fetch_filing("1082621", "13F-HR", document="56904.xml")
+```
+
+### `list_documents(ticker, form_type, date=None)`
+
+List every document inside a filing's accession.
+
+**Args:**
+- `ticker`: Ticker ("NVDA") or CIK ("1082621")
+- `form_type`: Form type ("13F-HR", "10-K", etc.)
+- `date`: Optional date filter (YYYY-MM-DD)
+
+**Returns:** Sequence, type, filename and description for each document, with
+the primary one marked. Feed a sequence or filename to `fetch_filing(...,
+document=...)`.
+
+```
+NVDA 13F-HR | 2026-08-14 | ACCESSION DOCUMENTS
+ACCESSION: 0001045810-26-000065
+ SEQ  TYPE                    DOCUMENT                  DESCRIPTION
+   1  13F-HR                  primary_doc.xml           [PRIMARY]
+   2  INFORMATION TABLE       information_table.xml     INFORMATION TABLE
+```
+
+### `thirteenf_holdings(ticker, date=None, form_type="13F-HR", max_holdings=50)`
+
+13F portfolio holdings — the information table, with issuer names.
+
+**Args:**
+- `ticker`: CIK of the manager ("1082621") or ticker if it's also a listed issuer ("NVDA")
+- `date`: Optional date filter (YYYY-MM-DD)
+- `form_type`: "13F-HR" (default) or "13F-HR/A"
+- `max_holdings`: Positions to display, largest first (default: 50; all are counted in totals)
+
+**Returns:** Positions sorted by value with issuer, CUSIP, resolved ticker, % of
+book and share count — plus **both** totals, table and cover page, reconciled
+against each other. A cover-page total with no table behind it is exactly what
+this prevents.
+
+```
+HARVARD MANAGEMENT CO INC | 13F-HR | PERIOD 2026-06-30
+FILED 2026-08-14 | CIK0001082621 | 0001193125-26-352412
+PORTFOLIO: 19 positions | $4,263,102,872 (information table)
+COVER PAGE: 19 positions | $4,263,102,872  [✓ reconciles]
+
+  #  ISSUER                              TICKER                VALUE   % BOOK       SHARES/PRN
+  1  SPACE EXPLORATION TECHN CORP        -            $2,210,091,186    51.8%       12,935,100
+  2  TAIWAN SEMICONDUCTOR MANUFAC        TSM            $349,591,747     8.2%          732,022
 ```
 
 ### `search_filing(ticker, form_type, pattern, ...)`
@@ -195,7 +273,7 @@ List available SEC filings and their cached status.
 
 **Args:**
 - `form_type`: Form type (e.g., "10-K", "10-Q", "8-K")
-- `ticker`: Optional stock ticker. Omit to see latest across all companies.
+- `ticker`: Optional ticker or CIK. Omit to see latest across all companies.
 - `start`: Starting index (default: 0, newest first)
 - `max`: Maximum filings to return (default: 15)
 
