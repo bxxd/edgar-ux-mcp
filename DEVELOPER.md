@@ -377,10 +377,14 @@ CACHE_DIR=/tmp/sec-filings-test ./cli fetch TSLA 10-K
 - CLI tested and working ✅
 - `tests/test_accession_documents.py` — CIK addressing, omitted-document rule,
   13F reconciliation, cache paths, PARTIAL formatting (22 tests, no network) ✅
-- `tests/test_hexagonal.py::TestCoreFormTypes` has 2 pre-existing failures: it
-  asserts `SC 13D` is in `CORE_FORM_TYPES` and `6-K` is not, but the code
-  deliberately does the opposite (see the comment in `CORE_FORM_TYPES`). Stale
-  test, not a code bug — left alone 🔄
+- `tests/test_hexagonal.py` — hexagonal core contracts, including
+  `TestCoreFormTypes`, which asserts the deliberate CORE membership choices:
+  `SC 13D` excluded, `6-K` included, `S-3ASR` included ✅
+- 28 tests, all passing, **none of which touch the network**. There is no
+  integration or functional coverage: nothing exercises a real SEC response, a
+  real cache round-trip, or two filings landing on the same date. There is also
+  no CI — nothing runs the suite on push — and `make lint` cannot run because
+  mypy and ruff are absent from the dev dependencies.
 
 ---
 
