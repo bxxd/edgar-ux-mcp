@@ -179,6 +179,32 @@ class TTLCache:
 _current_filings_cache = TTLCache(ttl_seconds=90, stale_ttl_seconds=3600)
 
 # Core form types for 'CORE' filter - essential filings only
+# Form 13F reported values in THOUSANDS of dollars until the SEC amendment that
+# took effect for filings made on or after 2023-01-03 — Q4-2022 report periods
+# onward — from which point they are whole dollars.
+#
+# Berkshire held exactly 669,429,166 AAPL shares across that boundary and did
+# not touch the position. The Q3-2022 filing reports 92,515,111; the Q4-2022
+# filing reports 86,841,985,318. Read verbatim, a pre-amendment book prints
+# 1000x light, and the cover-page reconciliation cannot catch it because
+# tableValueTotal carries the same unit as the table it is checking.
+_THOUSANDS_LAST_PERIOD = "2022-12-31"   # first period reported in whole dollars
+_THOUSANDS_LAST_FILED = "2023-01-03"    # amendment effective date
+
+
+def reported_in_thousands(
+    report_period: Optional[str], filing_date: str
+) -> bool:
+    """Were this 13F's values filed in thousands of dollars?
+
+    Keyed on the report period, which is what the amendment keys to. A filing
+    with no parsed period falls back to its filing date.
+    """
+    if report_period:
+        return report_period < _THOUSANDS_LAST_PERIOD
+    return filing_date < _THOUSANDS_LAST_FILED
+
+
 CORE_FORM_TYPES = {
     # Annual/Quarterly reports (US companies)
     '10-K', '10-K/A', '10-Q', '10-Q/A',
@@ -595,17 +621,31 @@ class EdgarAdapter(FilingFetcher):
 
         holdings.sort(key=lambda h: h.value, reverse=True)
 
+        report_period = (
+            str(report.report_period) if getattr(report, 'report_period', None) else None
+        )
+        cover_total_value = _safe_float(getattr(report, 'total_value', None))
+
+        # Rescale to whole dollars so a book is comparable across the amendment
+        # boundary. Both sides move together — the cover total is in the same
+        # unit as the table — so reconciliation is unaffected.
+        in_thousands = reported_in_thousands(report_period, filing.filing_date)
+        if in_thousands:
+            for h in holdings:
+                h.value *= 1000
+            if cover_total_value is not None:
+                cover_total_value *= 1000
+
         return ThirteenFReport(
             filing=filing,
             manager=self._manager_name(report) or filing.company_name or filing.ticker,
-            report_period=(
-                str(report.report_period) if getattr(report, 'report_period', None) else None
-            ),
+            report_period=report_period,
             cover_total_holdings=(
                 int(report.total_holdings) if getattr(report, 'total_holdings', None) is not None else None
             ),
-            cover_total_value=_safe_float(getattr(report, 'total_value', None)),
+            cover_total_value=cover_total_value,
             holdings=holdings,
+            reported_in_thousands=in_thousands,
         )
 
     def fetch(

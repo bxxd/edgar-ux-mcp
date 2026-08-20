@@ -166,6 +166,7 @@ class MCPHandlers:
                 "cover_total_value": report.cover_total_value,
                 "table_total_value": report.table_total_value,
                 "reconciles": report.reconciles,
+                "reported_in_thousands": report.reported_in_thousands,
                 "max_holdings": max_holdings,
                 "metadata": {
                     "ticker": report.filing.ticker,

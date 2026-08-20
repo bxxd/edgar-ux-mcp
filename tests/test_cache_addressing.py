@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 
+from mcp_edgar_ux.adapters.edgar import reported_in_thousands
 from mcp_edgar_ux.adapters.filesystem import FilesystemCache
 from mcp_edgar_ux.core.domain import Filing
 from mcp_edgar_ux.core.services import FetchFilingService
@@ -227,3 +228,27 @@ class TestCachedFlagIsHonest:
         assert first["cached"] is False
         assert second["cached"] is True
         assert sec.downloads == 1
+
+
+class TestThirteenFValueUnits:
+    """Form 13F reported values in THOUSANDS until the SEC amendment that took
+    effect for filings made on or after 2023-01-03 (Q4-2022 reports onward).
+
+    Berkshire held exactly 669,429,166 AAPL shares across that boundary and did
+    not touch the position: the Q3-2022 filing reports 92,515,111 and the
+    Q4-2022 filing 86,841,985,318. Read verbatim, a pre-amendment book prints
+    1000x light — and `reconciles` cannot catch it, because the cover page is
+    in the same wrong unit as the table.
+    """
+
+    def test_pre_amendment_period_is_thousands(self):
+        assert reported_in_thousands("2018-12-31", "2019-02-14") is True
+        assert reported_in_thousands("2022-09-30", "2022-11-14") is True
+
+    def test_amendment_period_onward_is_whole_dollars(self):
+        assert reported_in_thousands("2022-12-31", "2023-02-14") is False
+        assert reported_in_thousands("2026-06-30", "2026-08-14") is False
+
+    def test_missing_period_falls_back_to_the_filing_date(self):
+        assert reported_in_thousands(None, "2022-11-14") is True
+        assert reported_in_thousands(None, "2023-02-14") is False
