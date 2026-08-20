@@ -192,6 +192,16 @@ _THOUSANDS_LAST_PERIOD = "2022-12-31"   # first period reported in whole dollars
 _THOUSANDS_LAST_FILED = "2023-01-03"    # amendment effective date
 
 
+def _format_appends_exhibits(format: str) -> bool:
+    """Does fetch() append EX-* exhibits when rendering in this format?
+
+    'xml' is a lossless passthrough of the primary XML document (Forms 3/4/5/144,
+    where the text render drops the aff10b5One checkbox and every footnote). It
+    returns that document alone.
+    """
+    return format != "xml"
+
+
 def reported_in_thousands(
     report_period: Optional[str], filing_date: str
 ) -> bool:
@@ -536,18 +546,29 @@ class EdgarAdapter(FilingFetcher):
         )
         return [self._to_domain_document(a, primary_sequence) for a in attachments]
 
-    def omitted_documents(self, filing: Filing, include_exhibits: bool = True) -> list[FilingDocument]:
+    def omitted_documents(
+        self,
+        filing: Filing,
+        format: str = "text",
+        include_exhibits: bool = True,
+    ) -> list[FilingDocument]:
         """Substantive documents a fetch() would NOT return.
 
         fetch() returns the primary document plus EX-* exhibits. Anything else
         that isn't XBRL viewer output or packaging is content left behind —
         for a 13F-HR that is the information table holding every position.
+
+        Whether exhibits are in hand depends on the FORMAT the fetch used, not
+        only on what the caller asked for: format='xml' is a raw passthrough of
+        the primary document and returns it alone. Answering from the request
+        instead of the result is how this reports a false all-clear.
         """
+        exhibits_in_hand = include_exhibits and _format_appends_exhibits(format)
         omitted = []
         for doc in self.list_documents(filing):
             if doc.is_primary:
                 continue
-            if include_exhibits and doc.document_type.upper().startswith('EX-'):
+            if exhibits_in_hand and doc.document_type.upper().startswith('EX-'):
                 continue
             if (doc.description or '').strip().upper() == _XBRL_VIEWER_DESCRIPTION:
                 continue
@@ -693,8 +714,15 @@ class EdgarAdapter(FilingFetcher):
                             separator += f"EXHIBIT: {exhibit.document_type} ({exhibit.document})\n"
                             separator += "=" * 70 + "\n\n"
                             content += separator + ex_text
-            except Exception:
-                pass  # If exhibits fail, return main document
+            except Exception as e:
+                # The primary document in hand beats an error, but this must not
+                # be silent: the caller is about to be told the exhibits are
+                # included when they are not.
+                logger.warning(
+                    f"Exhibit append failed for {filing.form_type} "
+                    f"{filing.accession_number}: {e} — returning the primary "
+                    f"document without exhibits"
+                )
 
         return content
 
